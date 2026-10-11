@@ -1,7 +1,8 @@
 import Foundation
 import SwiftUI
 
-// Switches the Claude Code login from the menu bar.
+// The Accounts tab: switches the Claude Code login and shows Claude Code and
+// Codex usage limits.
 //
 // Storage is shared with cc-auth (github.com/rsnodgrass/claude-code-auth), so
 // accounts saved there show up here without logging in again:
@@ -19,12 +20,7 @@ let slotService = "cc-auth"
 let slotsDir = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude/cc-auth/slots")
 // Cloudflare in front of console.anthropic.com rejects requests without a User-Agent.
-let userAgent = "authbar/1.0"
-
-struct Failure: LocalizedError {
-    let errorDescription: String?
-    init(_ message: String) { errorDescription = message }
-}
+let userAgent = "agentbar/1.0"
 
 // MARK: Keychain
 
@@ -145,12 +141,12 @@ func slotTier(_ name: String) -> String? {
     return s.prefix(1).uppercased() + s.dropFirst()
 }
 
-struct Window {
+struct UsageWindow {
     var pct: Double?
     var resetsAt: Date?
 }
 
-extension Window {
+extension UsageWindow {
     // Claude's usage shape: {"utilization": 38.0, "resets_at": "2026-…"}
     init(claude json: Any?) {
         let w = json as? [String: Any]
@@ -164,15 +160,9 @@ struct Slot: Identifiable {
     var email: String?
     var tier: String?
     // nil when the plan has no such window (Codex Pro only has a weekly one).
-    var fiveHour: Window?
-    var sevenDay: Window?
+    var fiveHour: UsageWindow?
+    var sevenDay: UsageWindow?
     var problem: String?
-}
-
-func parseDate(_ v: Any?) -> Date? {
-    // ISO8601DateFormatter rejects the API's microsecond fractions.
-    guard let s = v as? String else { return nil }
-    return ISO8601DateFormatter().date(from: s.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression))
 }
 
 // MARK: Codex
@@ -201,7 +191,7 @@ func loadCodex() async -> Slot? {
         // Which window is which comes from its length, not primary/secondary.
         for key in ["primary_window", "secondary_window"] {
             guard let w = limits?[key] as? [String: Any] else { continue }
-            let window = Window(pct: w["used_percent"] as? Double,
+            let window = UsageWindow(pct: w["used_percent"] as? Double,
                                 resetsAt: (w["reset_at"] as? Double).map { Date(timeIntervalSince1970: $0) })
             switch w["limit_window_seconds"] as? Int {
             case 5 * 3600: s.fiveHour = window
@@ -216,7 +206,7 @@ func loadCodex() async -> Slot? {
 }
 
 @MainActor
-final class Store: ObservableObject {
+final class AccountsStore: ObservableObject {
     @Published var slots: [Slot] = []
     @Published var active: String?
     @Published var message: String?
@@ -279,8 +269,8 @@ final class Store: ObservableObject {
                     o = so
                 }
                 let u = try await get("/api/oauth/usage", o)
-                s.fiveHour = Window(claude: u["five_hour"])
-                s.sevenDay = Window(claude: u["seven_day"])
+                s.fiveHour = UsageWindow(claude: u["five_hour"])
+                s.sevenDay = UsageWindow(claude: u["seven_day"])
             } catch {
                 s.problem = error.localizedDescription
             }
@@ -333,9 +323,6 @@ final class Store: ObservableObject {
 
 // MARK: UI
 
-let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
-let codexBlue = Color(red: 0.30, green: 0.58, blue: 0.98)
-
 func severity(_ pct: Double?) -> Color {
     switch pct ?? 0 {
     case ..<60: Color(red: 0.20, green: 0.78, blue: 0.55)
@@ -350,43 +337,6 @@ func resetText(_ d: Date?) -> String {
     if s <= 0 { return "resetting" }
     if s < 24 * 3600 { return s >= 3600 ? "resets in \(s / 3600)h \(s / 60 % 60)m" : "resets in \(s / 60)m" }
     return "resets " + d.formatted(.dateTime.weekday(.abbreviated).hour())
-}
-
-@main
-struct AuthBar: App {
-    @StateObject private var store = Store()
-
-    var body: some Scene {
-        MenuBarExtra {
-            Panel(store: store)
-        } label: {
-            MenuBarLabel(slot: store.slots.first { $0.name == store.active })
-        }
-        .menuBarExtraStyle(.window)
-    }
-}
-
-/// Outer ring 5h, inner ring 7d, then the 5h percentage. Drawn into one
-/// template image so the menu bar tints it for light and dark mode.
-struct MenuBarLabel: View {
-    let slot: Slot?
-
-    var body: some View {
-        let content = HStack(spacing: 4) {
-            ZStack {
-                Ring(pct: slot?.fiveHour?.pct, color: .black, width: 2).frame(width: 15, height: 15)
-                Ring(pct: slot?.sevenDay?.pct, color: .black, width: 2).frame(width: 8, height: 8)
-            }
-            Text(slot?.fiveHour?.pct.map { "\(Int($0))%" } ?? "–")
-                .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                .foregroundStyle(.black)
-        }
-        let renderer = ImageRenderer(content: content)
-        renderer.scale = 2
-        let image = renderer.nsImage ?? NSImage()
-        image.isTemplate = true
-        return Image(nsImage: image)
-    }
 }
 
 struct Ring: View {
@@ -410,98 +360,64 @@ struct Ring: View {
     }
 }
 
-struct Panel: View {
-    @ObservedObject var store: Store
+struct AccountsView: View {
+    @ObservedObject var store: AccountsStore
+    private let grid = [GridItem(.adaptive(minimum: 340), spacing: 12, alignment: .top)]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
+        ScrollView { content }
+        .onAppear { Task { await store.reload() } }
+    }
 
-            sectionHeader("Claude Code", icon: "sparkle", tint: claudeOrange,
-                          detail: "\(store.slots.count) accounts")
-
-            if store.slots.isEmpty && !store.loading {
-                Text("No saved accounts yet. Log in with `claude`, then save the login below.")
-                    .font(.callout).foregroundStyle(.secondary)
+    var content: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            if let m = store.message {
+                Label(m, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            } else if let n = store.switchedTo {
+                Label("Switched to \(n). Restart Claude Code sessions to use it.",
+                      systemImage: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.secondary)
             }
-            VStack(spacing: 8) {
-                ForEach(store.slots) { s in
-                    AccountCard(slot: s, tint: claudeOrange, isActive: s.name == store.active,
-                                isSwitching: s.name == store.switching) {
-                        Task { await store.switchTo(s.name) }
+
+            VStack(alignment: .leading, spacing: 10) {
+                sectionHeader("Claude Code", icon: "sparkle", tint: claudeOrange,
+                              detail: "\(store.slots.count) accounts")
+                if store.slots.isEmpty && !store.loading {
+                    Text("No saved accounts yet. Log in with `claude`, then click Save Current Login.")
+                        .foregroundStyle(.secondary)
+                }
+                LazyVGrid(columns: grid, spacing: 12) {
+                    ForEach(store.slots) { s in
+                        AccountCard(slot: s, tint: claudeOrange, isActive: s.name == store.active,
+                                    isSwitching: s.name == store.switching) {
+                            Task { await store.switchTo(s.name) }
+                        }
                     }
                 }
             }
 
             if let c = store.codex {
-                sectionHeader("Codex", icon: "terminal.fill", tint: codexBlue, detail: "logged in")
-                AccountCard(slot: c, tint: codexBlue, isActive: true, isSwitching: false, onSwitch: nil)
+                VStack(alignment: .leading, spacing: 10) {
+                    sectionHeader("Codex", icon: "terminal.fill", tint: codexBlue, detail: "logged in")
+                    LazyVGrid(columns: grid, spacing: 12) {
+                        AccountCard(slot: c, tint: codexBlue, isActive: true, isSwitching: false, onSwitch: nil)
+                    }
+                }
             }
 
-            if let m = store.message {
-                Label(m, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.red)
-            } else if let n = store.switchedTo {
-                Label("Switched to \(n) — restart Claude Code sessions to use it.", systemImage: "arrow.triangle.2.circlepath")
+            if let d = store.updatedAt {
+                (Text("Usage updated ") + Text(d, style: .relative) + Text(" ago"))
                     .font(.caption).foregroundStyle(.secondary)
             }
-
-            Divider().opacity(0.5)
-            HStack {
-                Button { Task { await store.saveCurrent() } } label: {
-                    Label("Save current login", systemImage: "plus.circle.fill")
-                }
-                Spacer()
-                Button { NSApplication.shared.terminate(nil) } label: {
-                    Image(systemName: "power")
-                }
-                .help("Quit AuthBar")
-                .keyboardShortcut("q")
-            }
-            .buttonStyle(.borderless)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.secondary)
         }
-        .padding(16)
-        .frame(width: 360)
-        .onAppear { Task { await store.reload() } }
+        .padding(20)
     }
 
     func sectionHeader(_ title: String, icon: String, tint: Color, detail: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: icon).foregroundStyle(tint)
-            Text(title).font(.system(size: 12, weight: .semibold))
-            Spacer()
-            Text(detail).font(.caption2).foregroundStyle(.secondary)
-        }
-    }
-
-    var header: some View {
-        HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(LinearGradient(colors: [claudeOrange, Color(red: 0.62, green: 0.32, blue: 0.75)],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-                .overlay(Image(systemName: "person.2.fill").font(.system(size: 12, weight: .bold)).foregroundStyle(.white))
-                .frame(width: 28, height: 28)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("AuthBar").font(.system(size: 14, weight: .bold, design: .rounded))
-                if let d = store.updatedAt {
-                    (Text("Updated ") + Text(d, style: .relative) + Text(" ago"))
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            Button { Task { await store.reload() } } label: {
-                Group {
-                    if store.loading { ProgressView().controlSize(.small) }
-                    else { Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .bold)) }
-                }
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(Color.primary.opacity(0.07)))
-            }
-            .buttonStyle(.plain)
-            .disabled(store.loading)
-            .help("Refresh usage")
+            Text(title).font(.system(size: 13, weight: .semibold))
+            Text(detail).font(.caption).foregroundStyle(.secondary)
         }
     }
 }
@@ -587,7 +503,7 @@ struct AccountCard: View {
 
 struct UsageGauge: View {
     let label: String
-    let window: Window
+    let window: UsageWindow
 
     var body: some View {
         HStack(spacing: 8) {
