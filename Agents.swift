@@ -98,7 +98,12 @@ func readJSON(_ path: String) -> [String: Any]? {
 
 func query(_ dbPath: String, _ sql: String) throws -> [[String: String]] {
     var db: OpaquePointer?
-    let uri = URL(fileURLWithPath: dbPath).absoluteString + "?mode=ro"
+    // Both databases use WAL mode. A read-only connection can't create the
+    // -shm file, which only exists while the owning app has the database open.
+    // Without a -wal file nothing is open, so the main file is complete and
+    // can be read as immutable.
+    let open = FileManager.default.fileExists(atPath: dbPath + "-wal")
+    let uri = URL(fileURLWithPath: dbPath).absoluteString + (open ? "?mode=ro" : "?immutable=1")
     defer { sqlite3_close(db) }
     guard sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK else {
         throw Failure("can't open \(dbPath)")
