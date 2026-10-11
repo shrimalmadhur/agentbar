@@ -75,9 +75,18 @@ func isExpired(_ o: OAuth) -> Bool {
 
 // MARK: API
 
+struct RateLimited: LocalizedError {
+    let retryAfter: TimeInterval
+    var errorDescription: String? { "rate limited (HTTP 429)" }
+}
+
 func send(_ req: URLRequest) async throws -> [String: Any] {
     let (data, resp) = try await URLSession.shared.data(for: req)
-    let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+    let http = resp as? HTTPURLResponse
+    let code = http?.statusCode ?? 0
+    if code == 429 {
+        throw RateLimited(retryAfter: http?.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init) ?? 600)
+    }
     guard code == 200, let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     else { throw Failure("\(req.url?.path ?? ""): HTTP \(code)") }
     return obj
@@ -172,7 +181,7 @@ struct Slot: Identifiable {
 // token and running sessions hold the current one.
 let codexAuthFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/auth.json")
 
-func loadCodex() async -> Slot? {
+func loadCodex() async throws -> Slot? {
     guard let data = try? Data(contentsOf: codexAuthFile),
           let auth = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
           let tokens = auth["tokens"] as? [String: Any],
@@ -199,6 +208,8 @@ func loadCodex() async -> Slot? {
             default: break
             }
         }
+    } catch let e as RateLimited {
+        throw e
     } catch {
         s.problem = "\(error.localizedDescription) – run codex to refresh"
     }
@@ -217,12 +228,31 @@ final class AccountsStore: ObservableObject {
     @Published var codex: Slot?
     private var emailByToken: [String: String] = [:]
     private var timer: Timer?
+    private var retryAt: Date?
+    // The usage endpoints answer 429 when polled every couple of minutes;
+    // cc-auth refreshes after 15.
+    private let maxAge: TimeInterval = 600
 
     init() {
-        Task { await reload() }
-        timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
-            Task { await self?.reload() }
+        Task { await reloadIfStale() }
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { await self?.reloadIfStale() }
         }
+    }
+
+    /// The automatic refresh: skipped while the numbers are under `maxAge` old
+    /// or a 429 asked us to wait. The Refresh button calls `reload` directly.
+    func reloadIfStale() async {
+        if let u = updatedAt, -u.timeIntervalSinceNow < maxAge { return }
+        if let r = retryAt, r > Date() { return }
+        await reload()
+    }
+
+    /// A failed refresh keeps the card's last numbers instead of blanking it.
+    private func keepingNumbers(_ new: Slot?, _ old: Slot?) -> Slot? {
+        guard let new, let p = new.problem, let old, old.problem == nil else { return new }
+        message = "\(new.name): \(p). Showing the last numbers."
+        return old
     }
 
     private func activeEmail(_ o: OAuth) async throws -> String {
@@ -246,6 +276,7 @@ final class AccountsStore: ObservableObject {
     }
 
     func reload() async {
+        guard !loading else { return }
         loading = true
         defer { loading = false }
         message = nil
@@ -272,12 +303,20 @@ final class AccountsStore: ObservableObject {
                 s.fiveHour = UsageWindow(claude: u["five_hour"])
                 s.sevenDay = UsageWindow(claude: u["seven_day"])
             } catch {
+                if let r = error as? RateLimited { retryAt = Date().addingTimeInterval(r.retryAfter) }
                 s.problem = error.localizedDescription
             }
-            out.append(s)
+            out.append(keepingNumbers(s, slots.first { $0.name == name })!)
         }
         slots = out
-        codex = await loadCodex()
+        var c: Slot?
+        do {
+            c = try await loadCodex()
+        } catch {
+            if let r = error as? RateLimited { retryAt = Date().addingTimeInterval(r.retryAfter) }
+            c = Slot(name: codex?.name ?? "Codex", problem: error.localizedDescription)
+        }
+        codex = keepingNumbers(c, codex)
         updatedAt = Date()
     }
 
@@ -366,7 +405,7 @@ struct AccountsView: View {
 
     var body: some View {
         ScrollView { content }
-        .onAppear { Task { await store.reload() } }
+        .onAppear { Task { await store.reloadIfStale() } }
     }
 
     var content: some View {
