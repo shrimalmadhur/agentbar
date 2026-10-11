@@ -4,7 +4,8 @@ set -e
 cd "$(dirname "$0")"
 app=build/AgentBar.app
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp icon/AppIcon.icns "$app/Contents/Resources/"
 swiftc -O -parse-as-library *.swift -o "$app/Contents/MacOS/AgentBar"
 cat > "$app/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -12,6 +13,7 @@ cat > "$app/Contents/Info.plist" <<'EOF'
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key><string>AgentBar</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleIdentifier</key><string>local.agentbar</string>
     <key>CFBundleName</key><string>AgentBar</string>
     <key>CFBundlePackageType</key><string>APPL</string>
