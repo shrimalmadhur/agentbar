@@ -12,9 +12,12 @@ plain terminals, and lets you switch between Claude Code accounts.
 
 Every open workspace and running agent, grouped by what needs you:
 
-- **Needs you**: agents waiting for input, blocked, or stopped on an error, with
-  how long they've been waiting. Blocked background jobs say what they need.
-- **Working**, **Idle**, and **Stale** (nothing for 3+ days; collapsed).
+- **Needs you**: agents asking for input, a permission or a plan review,
+  blocked, or stopped on an error, with how long they've been waiting. Blocked
+  background jobs say what they need.
+- **Working**, including agents whose turn is over but whose subagents or
+  commands are still running ("background tasks").
+- **Idle**, and **Stale** (nothing for 3+ days; collapsed).
 - **Workspace age** on every card: amber after 2 days, red after 7.
 - **Subagents** (Claude Code and Codex) and **running commands**, such as a test
   run or a polling loop, with how long each has been going.

@@ -33,7 +33,7 @@ struct Agent: Identifiable {
     let source: Source
     var title: String
     var status: Status
-    var label: String // the source's own word for the status: "waiting", "blocked", …
+    var label: String // shown in the status pill: "needs input", "blocked", "background tasks", …
     var since: Date?
     var detail: String? // what a blocked background job needs from you
     var herdrPane: String?
@@ -292,15 +292,22 @@ func conductorWorkspaces() throws -> [Workspace] {
             order.append(wid)
         }
         guard let sid = r["sid"] else { continue }
-        let raw = r["status"] ?? "idle"
-        let status: Status = switch raw {
-        case "waiting", "error": .needsYou
-        case "working": .working
-        default: .idle
+        // Conductor's session statuses. "waiting" means the agent's turn is over
+        // but its background tasks are still running; Conductor counts it as a
+        // running agent, not as waiting for you.
+        let (status, label): (Status, String) = switch r["status"] ?? "idle" {
+        case "needs_user_input": (.needsYou, "needs input")
+        case "needs_user_permission": (.needsYou, "needs permission")
+        case "needs_plan_response": (.needsYou, "plan review")
+        case "error": (.needsYou, "error")
+        case "working": (.working, "working")
+        case "waiting": (.working, "background tasks")
+        case "cancelling": (.working, "cancelling")
+        case let other: (.idle, other)
         }
         byID[wid]!.agents.append(Agent(
             id: "c:" + sid, kind: kind(r["agent"]), source: .conductor,
-            title: r["title"] ?? "Untitled", status: status, label: raw,
+            title: r["title"] ?? "Untitled", status: status, label: label,
             since: parseDate(r["supdated"]), conductorSession: sid))
     }
     // A workspace collects one session per chat tab; idle ones only matter
@@ -443,6 +450,14 @@ func collect() -> Snapshot {
     tasks += runningCommands(claudePids: Set(claude.map(\.pid)))
     for (dir, task) in tasks {
         if let i = workspaces.firstIndex(where: { contains($0.path, dir) }) { workspaces[i].tasks.append(task) }
+    }
+    // Sources only say "idle" once an agent's turn ends, even when subagents or
+    // commands it started are still running; it is waiting on those, not done.
+    for i in workspaces.indices where workspaces[i].tasks.contains(where: \.running) {
+        for j in workspaces[i].agents.indices where workspaces[i].agents[j].status == .idle {
+            workspaces[i].agents[j].status = .working
+            workspaces[i].agents[j].label = "background tasks"
+        }
     }
     snap.workspaces = workspaces
     return snap
