@@ -504,10 +504,12 @@ final class AgentsStore: ObservableObject {
         updatedAt = Date()
     }
 
+    /// Busy sections are sorted by name: their activity times change every
+    /// refresh, and sorting by them reshuffles the cards every 5 seconds.
     func section(_ s: Status, stale: Bool = false) -> [Workspace] {
-        workspaces
-            .filter { $0.status == s && (s != .idle || $0.isStale == stale) }
-            .sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
+        let items = workspaces.filter { $0.status == s && (s != .idle || $0.isStale == stale) }
+        if s != .idle { return items.sorted { ($0.repo, $0.name) < ($1.repo, $1.name) } }
+        return items.sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
     }
 
     func count(_ s: Status) -> Int { workspaces.flatMap(\.agents).filter { $0.status == s }.count }
@@ -754,19 +756,19 @@ struct StatusPill: View {
     var body: some View {
         let tint = color(status)
         HStack(spacing: 4) {
+            // The animation is attached to the dot alone: started with withAnimation,
+            // a repeating animation also captures any layout change made at that
+            // moment, and the views around it bob up and down forever.
             Circle().fill(tint).frame(width: 6, height: 6)
                 .opacity(status == .working && pulse ? 0.3 : 1)
+                .animation(.easeInOut(duration: 0.9).repeatForever(), value: pulse)
             Text("\(label) · \(ago(since))")
                 .font(.system(size: 10, weight: .semibold).monospacedDigit())
         }
         .padding(.horizontal, 7).padding(.vertical, 3)
         .background(Capsule().fill(tint.opacity(status == .idle ? 0.08 : 0.15)))
         .foregroundStyle(status == .idle ? Color.secondary : tint)
-        .onAppear {
-            if status == .working {
-                withAnimation(.easeInOut(duration: 0.9).repeatForever()) { pulse = true }
-            }
-        }
+        .onAppear { pulse = true }
     }
 }
 
