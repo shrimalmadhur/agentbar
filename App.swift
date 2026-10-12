@@ -1,8 +1,10 @@
 import SwiftUI
+import UserNotifications
 
 // AgentBar: a window with an Agents page (what every coding agent on this Mac
 // is doing) and an Accounts page (Claude Code account switching and usage),
-// plus a menu bar icon that brings the window up.
+// plus a menu bar icon that brings the window up, and a notification when an
+// agent starts needing you.
 
 struct Failure: LocalizedError {
     let errorDescription: String?
@@ -40,7 +42,7 @@ struct AgentBar: App {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var item: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -48,6 +50,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item?.button?.image = NSImage(systemSymbolName: "square.grid.2x2.fill", accessibilityDescription: "AgentBar")
         item?.button?.target = self
         item?.button?.action = #selector(showWindow)
+
+        UNUserNotificationCenter.current().delegate = self
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    // Clicking a notification goes to the agent it is about.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler done: @escaping () -> Void) {
+        Target(userInfo: response.notification.request.content.userInfo)?.open()
+        done()
+    }
+
+    // Without this, notifications are dropped while AgentBar is the active app.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+        done([.banner, .sound])
     }
 
     // Opening an app that is already running sends it a reopen event, which
@@ -67,7 +85,7 @@ struct MainView: View {
         NavigationSplitView {
             List(selection: $page) {
                 ForEach(Page.allCases) { p in
-                    Label(p.rawValue, systemImage: p == .agents ? "square.grid.2x2.fill" : "person.2.fill")
+                    Label(p.rawValue, systemImage: p == .agents ? "square.grid.2x2" : "person.2")
                         .badge(p == .agents ? agents.count(.needsYou) : 0)
                         .tag(p)
                 }
@@ -90,7 +108,7 @@ struct MainView: View {
                             Label("Save Current Login", systemImage: "plus")
                         }
                         .help("Save the login Claude Code is using now as an account")
-                        Button { Task { await accounts.reload() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                        Button { Task { await accounts.reload(force: true) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                             .disabled(accounts.loading)
                     }
             }

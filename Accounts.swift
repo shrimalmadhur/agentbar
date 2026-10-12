@@ -121,6 +121,34 @@ func refreshed(_ o: OAuth) async throws -> OAuth {
     return n
 }
 
+// MARK: Usage cache
+
+/// Usage responses are saved to disk so a relaunch reuses them instead of
+/// calling the usage endpoints, which answer 429 when called often. Claude
+/// accounts use cc-auth's file for the slot, which records "_fetched_at" too.
+func usageFile(slot: String?) -> URL {
+    guard let slot else {
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/local.agentbar/codex-usage.json")
+    }
+    return slotsDir.appendingPathComponent(slot).appendingPathComponent("usage.json")
+}
+
+func cachedUsage(_ file: URL, maxAge: TimeInterval) -> [String: Any]? {
+    guard let data = try? Data(contentsOf: file),
+          let u = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let at = parseDate(u["_fetched_at"]), -at.timeIntervalSinceNow < maxAge
+    else { return nil }
+    return u
+}
+
+func saveUsage(_ u: [String: Any], _ file: URL) {
+    var u = u
+    u["_fetched_at"] = ISO8601DateFormatter().string(from: Date())
+    try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? JSONSerialization.data(withJSONObject: u).write(to: file)
+}
+
 func email(_ profile: [String: Any]?) -> String? {
     (profile?["account"] as? [String: Any])?["email"] as? String
 }
@@ -181,7 +209,7 @@ struct Slot: Identifiable {
 // token and running sessions hold the current one.
 let codexAuthFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/auth.json")
 
-func loadCodex() async throws -> Slot? {
+func loadCodex(cacheMaxAge: TimeInterval) async throws -> Slot? {
     guard let data = try? Data(contentsOf: codexAuthFile),
           let auth = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
           let tokens = auth["tokens"] as? [String: Any],
@@ -193,7 +221,14 @@ func loadCodex() async throws -> Slot? {
         req.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
         req.setValue(tokens["account_id"] as? String, forHTTPHeaderField: "ChatGPT-Account-Id")
         req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        let u = try await send(req)
+        let file = usageFile(slot: nil)
+        let u: [String: Any]
+        if let c = cachedUsage(file, maxAge: cacheMaxAge) {
+            u = c
+        } else {
+            u = try await send(req)
+            saveUsage(u, file)
+        }
         s = Slot(name: u["email"] as? String ?? "Codex",
                  tier: (u["plan_type"] as? String)?.capitalized)
         let limits = u["rate_limit"] as? [String: Any]
@@ -275,7 +310,9 @@ final class AccountsStore: ObservableObject {
         return n
     }
 
-    func reload() async {
+    /// `force` (the Refresh button) skips the saved usage and asks the server.
+    func reload(force: Bool = false) async {
+        let cacheMaxAge = force ? 0 : maxAge
         guard !loading else { return }
         loading = true
         defer { loading = false }
@@ -284,6 +321,13 @@ final class AccountsStore: ObservableObject {
         var out: [Slot] = []
         for name in slotNames() {
             var s = Slot(name: name, email: slotEmail(name), tier: slotTier(name))
+            let file = usageFile(slot: name)
+            if let u = cachedUsage(file, maxAge: cacheMaxAge) {
+                s.fiveHour = UsageWindow(claude: u["five_hour"])
+                s.sevenDay = UsageWindow(claude: u["seven_day"])
+                out.append(s)
+                continue
+            }
             do {
                 let o: OAuth
                 if name == active {
@@ -300,6 +344,7 @@ final class AccountsStore: ObservableObject {
                     o = so
                 }
                 let u = try await get("/api/oauth/usage", o)
+                saveUsage(u, file)
                 s.fiveHour = UsageWindow(claude: u["five_hour"])
                 s.sevenDay = UsageWindow(claude: u["seven_day"])
             } catch {
@@ -311,7 +356,7 @@ final class AccountsStore: ObservableObject {
         slots = out
         var c: Slot?
         do {
-            c = try await loadCodex()
+            c = try await loadCodex(cacheMaxAge: cacheMaxAge)
         } catch {
             if let r = error as? RateLimited { retryAt = Date().addingTimeInterval(r.retryAfter) }
             c = Slot(name: codex?.name ?? "Codex", problem: error.localizedDescription)
@@ -445,7 +490,7 @@ struct AccountsView: View {
             }
 
             if let d = store.updatedAt {
-                (Text("Usage updated ") + Text(d, style: .relative) + Text(" ago"))
+                (Text("Checked ") + Text(d, style: .relative) + Text(" ago"))
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -507,11 +552,7 @@ struct AccountCard: View {
                 .fill(Color.primary.opacity(hovering && !isActive ? 0.08 : 0.04)))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(isActive ? AnyShapeStyle(LinearGradient(colors: [tint, tint.opacity(0.25)],
-                                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
-                                       : AnyShapeStyle(Color.primary.opacity(0.08)),
-                              lineWidth: isActive ? 1.5 : 1))
-        .shadow(color: isActive ? tint.opacity(0.25) : .clear, radius: 10)
+                .strokeBorder(isActive ? tint : Color.primary.opacity(0.08), lineWidth: isActive ? 1.5 : 1))
         .scaleEffect(hovering && !isActive ? 1.01 : 1)
         .animation(.easeOut(duration: 0.15), value: hovering)
         .contentShape(Rectangle())
@@ -568,13 +609,12 @@ struct Avatar: View {
 
     var body: some View {
         // Sum of scalars, not hashValue: Swift randomizes hashValue per launch.
-        let hue = Double(seed.unicodeScalars.reduce(0) { $0 + Int($1.value) } % 360) / 360
+        let palette: [Color] = [.blue, .purple, .pink, .teal, .indigo, .mint, .cyan, .brown]
+        let c = palette[seed.unicodeScalars.reduce(0) { $0 + Int($1.value) } % palette.count]
         Circle()
-            .fill(LinearGradient(colors: [Color(hue: hue, saturation: 0.55, brightness: 0.95),
-                                          Color(hue: (hue + 0.1).truncatingRemainder(dividingBy: 1), saturation: 0.75, brightness: 0.7)],
-                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+            .fill(c.gradient)
             .overlay(Text(seed.prefix(1).uppercased())
-                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white))
             .frame(width: 30, height: 30)
     }

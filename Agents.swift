@@ -2,6 +2,7 @@ import AppKit
 import Darwin
 import SQLite3
 import SwiftUI
+import UserNotifications
 
 // The Agents tab: the coding agents running on this Mac, grouped by
 // workspace. Everything is read, nothing is written:
@@ -36,6 +37,7 @@ struct Agent: Identifiable {
     var label: String // shown in the status pill: "needs input", "blocked", "background tasks", …
     var since: Date?
     var detail: String? // what a blocked background job needs from you
+    var lastMessage: String?
     var herdrPane: String?
     var conductorSession: String?
 }
@@ -235,6 +237,49 @@ func runningCommands(claudePids: Set<Int32>) -> [(cwd: String, task: BackgroundT
     return out
 }
 
+/// The text of a Claude-style assistant message: {"type": "assistant",
+/// "message": {"content": [{"type": "text", "text": …}, …]}}. Conductor stores
+/// Codex replies in the same shape. Tool calls and results have no text block.
+func assistantText(_ json: [String: Any]) -> String? {
+    guard json["type"] as? String == "assistant",
+          let blocks = (json["message"] as? [String: Any])?["content"] as? [[String: Any]]
+    else { return nil }
+    let text = blocks.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }
+        .joined(separator: " ")
+        .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespaces)
+    return text.isEmpty ? nil : String(text.prefix(600))
+}
+
+func conductorLastMessage(_ session: String) -> String? {
+    let rows = (try? query(conductorDB, """
+        select content from session_messages
+        where session_id = '\(session.replacingOccurrences(of: "'", with: "''"))' and role = 'assistant'
+        order by rowid desc limit 40
+        """)) ?? []
+    for r in rows {
+        if let c = r["content"], let j = (try? JSONSerialization.jsonObject(with: Data(c.utf8))) as? [String: Any],
+           let t = assistantText(j) { return t }
+    }
+    return nil
+}
+
+/// The last assistant text in a Claude Code transcript, read from the file's
+/// final 512 KB: transcripts grow to hundreds of megabytes.
+func transcriptLastMessage(cwd: String, session: String) -> String? {
+    let project = cwd.replacingOccurrences(of: "[^A-Za-z0-9]", with: "-", options: .regularExpression)
+    guard let h = FileHandle(forReadingAtPath: "\(home)/.claude/projects/\(project)/\(session).jsonl") else { return nil }
+    defer { try? h.close() }
+    let end = (try? h.seekToEnd()) ?? 0
+    try? h.seek(toOffset: end > 512_000 ? end - 512_000 : 0)
+    guard let data = try? h.readToEnd() else { return nil }
+    for line in String(decoding: data, as: UTF8.self).split(separator: "\n").reversed() {
+        if let j = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
+           let t = assistantText(j) { return t }
+    }
+    return nil
+}
+
 /// The git checkout containing `cwd`. Read from .git directly: one `git`
 /// process per agent every refresh would be the slowest thing here.
 func checkout(_ cwd: String) -> Workspace? {
@@ -317,6 +362,7 @@ func conductorWorkspaces() throws -> [Workspace] {
         let busy = w.agents.filter { $0.status != .idle }
         let latestIdle = w.agents.filter { $0.status == .idle }.max { ($0.since ?? .distantPast) < ($1.since ?? .distantPast) }
         w.agents = busy.isEmpty ? (latestIdle.map { [$0] } ?? []) : busy
+        for i in w.agents.indices { w.agents[i].lastMessage = w.agents[i].conductorSession.flatMap(conductorLastMessage) }
         return w
     }
 }
@@ -422,13 +468,19 @@ func collect() -> Snapshot {
     local += claudeJobs()
 
     let claude = claudeProcesses()
+    // herdr reports no pid, so a herdr Claude agent is matched to its process by folder.
+    for i in local.indices where local[i].agent.source == .herdr && local[i].agent.kind == .claude {
+        if let p = claude.first(where: { $0.terminal && $0.cwd == local[i].cwd }), let s = p.session {
+            local[i].agent.lastMessage = transcriptLastMessage(cwd: p.cwd, session: s)
+        }
+    }
     let herdrCwds = Set(local.filter { $0.agent.source == .herdr && $0.agent.kind == .claude }.map(\.cwd))
     for p in claude where p.terminal && !herdrCwds.contains(p.cwd) {
         let status: Status = p.status == "busy" ? .working : .idle
-        local.append(LocalAgent(
-            agent: Agent(id: "t:\(p.pid)", kind: .claude, source: .terminal, title: p.name, status: status,
-                         label: p.status == "busy" ? "working" : p.status, since: p.since),
-            cwd: p.cwd))
+        var a = Agent(id: "t:\(p.pid)", kind: .claude, source: .terminal, title: p.name, status: status,
+                      label: p.status == "busy" ? "working" : p.status, since: p.since)
+        a.lastMessage = p.session.flatMap { transcriptLastMessage(cwd: p.cwd, session: $0) }
+        local.append(LocalAgent(agent: a, cwd: p.cwd))
     }
 
     for l in local {
@@ -475,6 +527,9 @@ final class AgentsStore: ObservableObject {
     private var seen: [String: (label: String, at: Date)] = [:]
     private var timer: Timer?
     private var refreshing = false
+    /// Agents that needed you at the last refresh; nil until the first one, so
+    /// launching doesn't notify about everything already waiting.
+    private var needsYou: Set<String>?
 
     init() {
         Task { await refresh() }
@@ -499,6 +554,13 @@ final class AgentsStore: ObservableObject {
             }
         }
         seen = nextSeen
+        let now = Set(snap.workspaces.flatMap(\.agents).filter { $0.status == .needsYou }.map(\.id))
+        if let before = needsYou {
+            for w in snap.workspaces {
+                for a in w.agents where now.contains(a.id) && !before.contains(a.id) { notify(a, in: w) }
+            }
+        }
+        needsYou = now
         workspaces = snap.workspaces
         problems = snap.problems
         updatedAt = Date()
@@ -512,7 +574,110 @@ final class AgentsStore: ObservableObject {
         return items.sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
     }
 
+    private func notify(_ a: Agent, in w: Workspace) {
+        let c = UNMutableNotificationContent()
+        c.title = "\(w.name) needs you"
+        c.subtitle = "\(a.label.prefix(1).uppercased() + a.label.dropFirst()): \(a.title)"
+        c.body = a.detail ?? a.lastMessage ?? ""
+        c.sound = .default
+        c.userInfo = Target(w, a).userInfo
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+    }
+
     func count(_ s: Status) -> Int { workspaces.flatMap(\.agents).filter { $0.status == s }.count }
+}
+
+// MARK: Opening a workspace
+
+/// Where to take the user for an agent: its herdr pane, its Conductor
+/// workspace and chat, or else its folder in Finder. Also travels in a
+/// notification's userInfo, so clicking the notification goes to the same place.
+struct Target {
+    var path: String
+    var conductorID: String?
+    var session: String?
+    var pane: String?
+
+    init(_ w: Workspace, _ a: Agent?) {
+        path = w.path
+        conductorID = w.conductorID
+        session = a?.conductorSession
+        pane = a?.herdrPane ?? w.agents.first { $0.herdrPane != nil }?.herdrPane
+    }
+
+    init?(userInfo: [AnyHashable: Any]) {
+        guard let p = userInfo["path"] as? String else { return nil }
+        path = p
+        conductorID = userInfo["conductorID"] as? String
+        session = userInfo["session"] as? String
+        pane = userInfo["pane"] as? String
+    }
+
+    var userInfo: [String: String] {
+        var u = ["path": path]
+        u["conductorID"] = conductorID
+        u["session"] = session
+        u["pane"] = pane
+        return u
+    }
+
+    var appName: String { pane != nil ? "herdr" : conductorID != nil ? "Conductor" : "Finder" }
+
+    // Each branch also activates the app it targets: a link or a pane switch on
+    // its own changes the app's view without bringing its window forward, so
+    // on another display or Space nothing visible happens.
+    func open() {
+        if let pane {
+            let bin = ["\(home)/.local/bin/herdr", "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"]
+                .first { FileManager.default.isExecutableFile(atPath: $0) }
+            if let bin { _ = run(bin, ["agent", "focus", pane]) }
+            if let app = herdrTerminalApp() {
+                NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration())
+            }
+        } else if let conductorID {
+            // Undocumented: handled by Conductor's frontend as "open-workspace";
+            // `session` picks the chat tab.
+            var c = URLComponents(string: "conductor://workspace")!
+            c.queryItems = [URLQueryItem(name: "id", value: conductorID)]
+                + (session.map { [URLQueryItem(name: "session", value: $0)] } ?? [])
+            if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.conductor.app") {
+                NSWorkspace.shared.open([c.url!], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+            } else {
+                NSWorkspace.shared.open(c.url!)
+            }
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        }
+    }
+}
+
+func executablePath(_ pid: Int32) -> String? {
+    var buf = [CChar](repeating: 0, count: 4096)
+    return proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 ? String(cString: buf) : nil
+}
+
+/// The app herdr's client is running in (Terminal, iTerm, Ghostty, …): the
+/// first ancestor of a herdr process whose executable is inside an .app bundle.
+func herdrTerminalApp() -> URL? {
+    let procs = processes()
+    let parent = Dictionary(procs.map { ($0.pid, $0.ppid) }, uniquingKeysWith: { a, _ in a })
+    for p in procs where executablePath(p.pid).map({ URL(fileURLWithPath: $0).lastPathComponent == "herdr" }) == true {
+        var pid = p.ppid
+        while pid > 1 {
+            if let path = executablePath(pid), let r = path.range(of: ".app/Contents/MacOS/") {
+                return URL(fileURLWithPath: String(path[..<r.lowerBound]) + ".app")
+            }
+            pid = parent[pid] ?? 0
+        }
+    }
+    return nil
+}
+
+extension Workspace {
+    /// The agent that most needs attention.
+    var lead: Agent? { agents.min { $0.status < $1.status } }
+    var target: Target { Target(self, lead) }
+    var title: String { repo.isEmpty || repo == name ? name : "\(repo) / \(name)" }
 }
 
 // MARK: UI
@@ -520,10 +685,32 @@ final class AgentsStore: ObservableObject {
 struct AgentsView: View {
     @ObservedObject var store: AgentsStore
     @State private var showStale = false
+    @State private var selection: String?
+    @State private var showInspector = true
     private let grid = [GridItem(.adaptive(minimum: 380), spacing: 12, alignment: .top)]
 
     var body: some View {
         ScrollView { content }
+            .inspector(isPresented: $showInspector) {
+                Group {
+                    if let w = store.workspaces.first(where: { $0.id == selection }) {
+                        WorkspaceDetail(workspace: w)
+                    } else {
+                        ContentUnavailableView("No Selection", systemImage: "sidebar.right",
+                                               description: Text("Click a workspace to see its agents and background tasks."))
+                    }
+                }
+                .inspectorColumnWidth(min: 280, ideal: 340, max: 480)
+            }
+            .toolbar {
+                Button { showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right") }
+            }
+    }
+
+    func card(_ w: Workspace) -> some View {
+        WorkspaceCard(workspace: w, isSelected: w.id == selection)
+            .onTapGesture(count: 2) { w.target.open() }
+            .onTapGesture { selection = w.id }
     }
 
     var content: some View {
@@ -555,7 +742,7 @@ struct AgentsView: View {
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 header(title, icon: icon, tint: tint, count: items.count)
-                LazyVGrid(columns: grid, spacing: 12) { ForEach(items) { WorkspaceCard(workspace: $0) } }
+                LazyVGrid(columns: grid, spacing: 12) { ForEach(items) { card($0) } }
             }
         }
     }
@@ -575,15 +762,15 @@ struct AgentsView: View {
                 }
                 .buttonStyle(.plain)
                 if showStale {
-                    LazyVGrid(columns: grid, spacing: 12) { ForEach(stale) { WorkspaceCard(workspace: $0) } }
+                    LazyVGrid(columns: grid, spacing: 12) { ForEach(stale) { card($0) } }
                 }
             }
         }
     }
 }
 
-let needsColor = Color(red: 0.98, green: 0.55, blue: 0.20)
-let workingColor = Color(red: 0.20, green: 0.78, blue: 0.55)
+let needsColor = Color.orange
+let workingColor = Color.green
 
 func ago(_ d: Date?) -> String {
     guard let d else { return "–" }
@@ -600,6 +787,7 @@ func color(_ s: Status) -> Color {
 
 struct WorkspaceCard: View {
     let workspace: Workspace
+    let isSelected: Bool
     @State private var hovering = false
 
     var body: some View {
@@ -625,6 +813,10 @@ struct WorkspaceCard: View {
                 AgeChip(createdAt: w.createdAt)
             }
             ForEach(w.agents) { AgentRow(agent: $0) }
+            if let m = w.lead?.lastMessage {
+                Text(m).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if !w.tasks.isEmpty { TaskList(tasks: w.tasks) }
             HStack(spacing: 6) {
                 Text(w.source.rawValue).font(.system(size: 9, weight: .bold))
@@ -645,37 +837,12 @@ struct WorkspaceCard: View {
                 .frame(width: 3)
         }
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(Color.accentColor, lineWidth: isSelected ? 2 : 0))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture { open(w) }
-        .contextMenu {
-            Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: w.path)]) }
-            Button("Copy Path") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(w.path, forType: .string)
-            }
-        }
+        .contextMenu { WorkspaceActions(workspace: w) }
         .help(w.path)
-    }
-
-    /// Goes to the agent that most needs attention: its herdr pane, or its
-    /// Conductor workspace and chat.
-    func open(_ w: Workspace) {
-        let target = w.agents.min { $0.status < $1.status }
-        if let pane = target?.herdrPane ?? w.agents.first(where: { $0.herdrPane != nil })?.herdrPane {
-            let bin = ["\(home)/.local/bin/herdr", "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"]
-                .first { FileManager.default.isExecutableFile(atPath: $0) }
-            if let bin { _ = run(bin, ["agent", "focus", pane]) }
-        } else if let id = w.conductorID {
-            // Undocumented: handled by Conductor's frontend as "open-workspace";
-            // `session` picks the chat tab.
-            var c = URLComponents(string: "conductor://workspace")!
-            c.queryItems = [URLQueryItem(name: "id", value: id)]
-                + (target?.conductorSession.map { [URLQueryItem(name: "session", value: $0)] } ?? [])
-            NSWorkspace.shared.open(c.url!)
-        } else {
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: w.path)])
-        }
     }
 }
 
@@ -786,5 +953,92 @@ struct AgeChip: View {
                 .foregroundStyle(tint)
                 .help("Worktree created \(createdAt.formatted(date: .abbreviated, time: .shortened))")
         }
+    }
+}
+
+func capitalized(_ s: String) -> String { s.prefix(1).uppercased() + s.dropFirst() }
+
+struct WorkspaceActions: View {
+    let workspace: Workspace
+
+    var body: some View {
+        Button("Open in \(workspace.target.appName)") { workspace.target.open() }
+        Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: workspace.path)]) }
+        Button("Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(workspace.path, forType: .string)
+        }
+    }
+}
+
+struct WorkspaceDetail: View {
+    let workspace: Workspace
+
+    var body: some View {
+        let w = workspace
+        Form {
+            Section {
+                LabeledContent("Repository", value: w.repo.isEmpty ? "–" : w.repo)
+                LabeledContent("Branch", value: w.branch ?? "–")
+                if let c = w.createdAt {
+                    LabeledContent("Created") {
+                        Text("\(c.formatted(date: .abbreviated, time: .shortened)) (\(ago(c)) ago)")
+                    }
+                }
+                LabeledContent("Last activity", value: w.lastActivity.map { "\(ago($0)) ago" } ?? "–")
+                LabeledContent("Source", value: w.source.rawValue)
+                LabeledContent("Path") {
+                    Text(w.path).textSelection(.enabled).lineLimit(3).multilineTextAlignment(.trailing)
+                }
+            } header: {
+                Text(w.title).font(.headline)
+            }
+
+            Section("Agents") {
+                if w.agents.isEmpty { Text("None").foregroundStyle(.secondary) }
+                ForEach(w.agents) { a in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label {
+                            Text(a.title).fontWeight(.medium)
+                        } icon: {
+                            Image(systemName: a.kind == .codex ? "terminal" : "sparkle")
+                                .foregroundStyle(a.kind == .codex ? codexBlue : claudeOrange)
+                        }
+                        Text("\(capitalized(a.label)) · \(ago(a.since)) · \(a.source.rawValue)")
+                            .font(.caption)
+                            .foregroundStyle(a.status == .needsYou ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        if let d = a.detail { Text(d).font(.callout).textSelection(.enabled) }
+                        if let m = a.lastMessage {
+                            Text(m).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+
+            if !w.tasks.isEmpty {
+                Section("Background") {
+                    ForEach(w.tasks.sorted { $0.running && !$1.running }) { t in
+                        HStack(alignment: .firstTextBaseline) {
+                            Image(systemName: t.isCommand ? "terminal" : "person.2")
+                                .foregroundStyle(.secondary).frame(width: 18)
+                            Text(t.title)
+                                .font(t.isCommand ? .system(.callout, design: .monospaced) : .callout)
+                                .lineLimit(3)
+                                .textSelection(.enabled)
+                            Spacer()
+                            Text(t.running ? "Running · \(ago(t.since))" : "Done")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Button("Open in \(w.target.appName)") { w.target.open() }
+                Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: w.path)]) }
+            }
+        }
+        .formStyle(.grouped)
     }
 }

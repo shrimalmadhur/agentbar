@@ -18,11 +18,19 @@ Every open workspace and running agent, grouped by what needs you:
 - **Working**, including agents whose turn is over but whose subagents or
   commands are still running ("background tasks").
 - **Idle**, and **Stale** (nothing for 3+ days; collapsed).
+- **Last message** from each agent on its card, so you can see what it's asking
+  or where it stopped without switching to it.
 - **Workspace age** on every card: amber after 2 days, red after 7.
 - **Subagents** (Claude Code and Codex) and **running commands**, such as a test
   run or a polling loop, with how long each has been going.
-- **Click to jump there**: a Conductor card opens that workspace and chat, and a
-  herdr card focuses that pane. Right-click to reveal the folder or copy its path.
+- **Details panel**: click a card to see its repo, branch, creation date, path,
+  every agent's full last message, and every subagent and command.
+- **Double-click to jump there**: a Conductor card opens that workspace and chat,
+  and a herdr card focuses that pane, bringing Conductor or the terminal forward
+  on whichever display or Space it's on. Right-click to reveal the folder or
+  copy its path.
+- **Notifications** when an agent starts needing you, with its last message.
+  Clicking one jumps to that agent.
 
 Refreshes every 5 seconds.
 
@@ -81,6 +89,7 @@ switching accounts, which writes Claude Code's login in the Keychain.
 | Claude Code subagents | `~/.claude/projects/<folder>/<session>/subagents/` |
 | Codex subagents | the `threads` table in `~/.codex/state_5.sqlite` |
 | Running commands | shell processes started by a `claude` or `codex` process |
+| Last message | Conductor's `session_messages` table, or the end of the Claude Code transcript |
 | Branch and worktree age | the workspace's `.git` |
 
 A subagent counts as running if it wrote to its transcript (Claude Code) or
@@ -113,7 +122,10 @@ by Ryan Snodgrass, which inspired this page. Accounts saved with cc-auth appear
 in AgentBar without logging in again, and the two can be used side by side.
 
 Usage comes from `https://api.anthropic.com/api/oauth/usage` (Claude Code) and
-`https://chatgpt.com/backend-api/wham/usage` (Codex). The Codex login is read
+`https://chatgpt.com/backend-api/wham/usage` (Codex). Both answer HTTP 429 when
+called often, so AgentBar saves each response to disk (for Claude accounts, in
+cc-auth's `usage.json` for the slot) and only asks again once it's 10 minutes
+old, waiting longer if the server says to. The Refresh button asks right away. The Codex login is read
 from `~/.codex/auth.json` and never renewed by AgentBar.
 
 ## Caveats
