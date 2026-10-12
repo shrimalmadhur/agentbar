@@ -732,8 +732,10 @@ struct AgentsView: View {
                 Text("No open workspaces or running agents found.").foregroundStyle(.secondary)
             }
             section("Needs you", icon: "hand.raised.fill", tint: needsColor, store.section(.needsYou))
-            section("Working", icon: "bolt.fill", tint: workingColor, store.section(.working))
+            // Idle comes before Working: an idle agent has finished and is
+            // waiting on your next step; a working one doesn't need you yet.
             section("Idle", icon: "moon.fill", tint: .secondary, store.section(.idle))
+            section("Working", icon: "bolt.fill", tint: workingColor, store.section(.working))
             staleSection
             ForEach(store.problems, id: \.self) { p in
                 Label(p, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
