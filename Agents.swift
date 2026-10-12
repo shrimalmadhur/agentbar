@@ -38,6 +38,7 @@ struct Agent: Identifiable {
     var since: Date?
     var detail: String? // what a blocked background job needs from you
     var lastMessage: String?
+    var sessionID: String? // Claude Code session or Codex thread; tasks name it as their parent
     var herdrPane: String?
     var conductorSession: String?
 }
@@ -74,6 +75,7 @@ struct BackgroundTask: Identifiable {
     var title: String
     var running: Bool
     var since: Date? // when a command started; when a subagent last wrote
+    var parent: String? // the sessionID of the agent that started it, or a Codex subagent's thread
 }
 
 func contains(_ dir: String, _ path: String) -> Bool { path == dir || path.hasPrefix(dir + "/") }
@@ -146,7 +148,7 @@ func claudeSubagents(cwd: String, session: String) -> [BackgroundTask] {
         let task = meta?["description"] as? String ?? ""
         return BackgroundTask(id: "cs:" + f, isCommand: false, agent: .claude,
                               title: task.isEmpty ? type : "\(type): \(task)",
-                              running: -m.timeIntervalSinceNow < 60, since: m)
+                              running: -m.timeIntervalSinceNow < 60, since: m, parent: session)
     }
 }
 
@@ -158,17 +160,21 @@ func codexSubagents() throws -> [(cwd: String, task: BackgroundTask)] {
     guard FileManager.default.fileExists(atPath: path) else { return [] }
     let cutoff = Int((Date().timeIntervalSince1970 - 600) * 1000)
     let rows = try query(path, """
-        select id, cwd, agent_nickname as nick, agent_role as role, updated_at_ms as updated,
-               coalesce(nullif(title, ''), substr(first_user_message, 1, 120)) as task
-        from threads where thread_source = 'subagent' and updated_at_ms > \(cutoff)
+        select t.id, t.cwd, t.agent_nickname as nick, t.agent_role as role, t.updated_at_ms as updated,
+               coalesce(nullif(t.title, ''), substr(t.first_user_message, 1, 120)) as task,
+               e.parent_thread_id as parent
+        from threads t left join thread_spawn_edges e on e.child_thread_id = t.id
+        where t.thread_source = 'subagent' and t.updated_at_ms > \(cutoff)
         """)
     return rows.compactMap { r in
         guard let id = r["id"], let cwd = r["cwd"], let ms = Double(r["updated"] ?? "") else { return nil }
         let updated = Date(timeIntervalSince1970: ms / 1000)
         let who = [r["nick"], r["role"].map { "(\($0))" }].compactMap { $0 }.joined(separator: " ")
         let title = [who.isEmpty ? "subagent" : who, r["task"]].compactMap { $0 }.joined(separator: ": ")
-        return (cwd, BackgroundTask(id: "xs:" + id, isCommand: false, agent: .codex, title: title,
-                                    running: -updated.timeIntervalSinceNow < 60, since: updated))
+        // Codex thread ids are the task ids here, so a subagent started by
+        // another subagent names that subagent's node as its parent.
+        return (cwd, BackgroundTask(id: id, isCommand: false, agent: .codex, title: title,
+                                    running: -updated.timeIntervalSinceNow < 60, since: updated, parent: r["parent"]))
     }
 }
 
@@ -220,19 +226,20 @@ func commandTitle(_ c: String) -> String {
 /// Shells started directly by a Claude Code or Codex process, by that process's
 /// working folder. MCP servers are also children of agents but run node or npm,
 /// not a shell, so they're left out.
-func runningCommands(claudePids: Set<Int32>) -> [(cwd: String, task: BackgroundTask)] {
+func runningCommands(claudeSessions: [Int32: String]) -> [(cwd: String, task: BackgroundTask)] {
     let procs = processes()
     let shells = ["/bin/zsh", "/bin/bash", "/bin/sh", "zsh", "bash", "sh"]
     let codexPids = Set(procs.filter { $0.command.range(of: #"(^|/)codex( |$)"#, options: .regularExpression) != nil }.map(\.pid))
     var out: [(String, BackgroundTask)] = []
     for p in procs {
-        let isClaude = claudePids.contains(p.ppid)
+        let isClaude = claudeSessions[p.ppid] != nil
         guard isClaude || codexPids.contains(p.ppid),
               shells.contains(where: { p.command.hasPrefix($0 + " ") }),
               let dir = cwd(of: p.pid)
         else { continue }
         out.append((dir, BackgroundTask(id: "p:\(p.pid)", isCommand: true, agent: isClaude ? .claude : .codex,
-                                        title: commandTitle(p.command), running: true, since: p.started)))
+                                        title: commandTitle(p.command), running: true, since: p.started,
+                                        parent: claudeSessions[p.ppid])))
     }
     return out
 }
@@ -353,7 +360,7 @@ func conductorWorkspaces() throws -> [Workspace] {
         byID[wid]!.agents.append(Agent(
             id: "c:" + sid, kind: kind(r["agent"]), source: .conductor,
             title: r["title"] ?? "Untitled", status: status, label: label,
-            since: parseDate(r["supdated"]), conductorSession: sid))
+            since: parseDate(r["supdated"]), sessionID: r["csid"], conductorSession: sid))
     }
     // A workspace collects one session per chat tab; idle ones only matter
     // when nothing else is going on, and then only the latest.
@@ -418,7 +425,8 @@ func claudeJobs() -> [LocalAgent] {
         return LocalAgent(agent: Agent(id: "j:" + id, kind: .claude, source: .job,
                                        title: j["name"] as? String ?? j["detail"] as? String ?? "Background job",
                                        status: status, label: raw, since: updated,
-                                       detail: j["needs"] as? String ?? j["detail"] as? String),
+                                       detail: j["needs"] as? String ?? j["detail"] as? String,
+                                       sessionID: j["sessionId"] as? String),
                           cwd: cwd)
     }
 }
@@ -472,6 +480,7 @@ func collect() -> Snapshot {
     for i in local.indices where local[i].agent.source == .herdr && local[i].agent.kind == .claude {
         if let p = claude.first(where: { $0.terminal && $0.cwd == local[i].cwd }), let s = p.session {
             local[i].agent.lastMessage = transcriptLastMessage(cwd: p.cwd, session: s)
+            local[i].agent.sessionID = s
         }
     }
     let herdrCwds = Set(local.filter { $0.agent.source == .herdr && $0.agent.kind == .claude }.map(\.cwd))
@@ -480,6 +489,7 @@ func collect() -> Snapshot {
         var a = Agent(id: "t:\(p.pid)", kind: .claude, source: .terminal, title: p.name, status: status,
                       label: p.status == "busy" ? "working" : p.status, since: p.since)
         a.lastMessage = p.session.flatMap { transcriptLastMessage(cwd: p.cwd, session: $0) }
+        a.sessionID = p.session
         local.append(LocalAgent(agent: a, cwd: p.cwd))
     }
 
@@ -499,7 +509,8 @@ func collect() -> Snapshot {
     // this covers subagents of agents from all sources.
     var tasks = claude.flatMap { p in p.session.map { s in claudeSubagents(cwd: p.cwd, session: s).map { (p.cwd, $0) } } ?? [] }
     do { tasks += try codexSubagents() } catch { snap.problems.append("Codex subagents: \(error.localizedDescription)") }
-    tasks += runningCommands(claudePids: Set(claude.map(\.pid)))
+    tasks += runningCommands(claudeSessions: Dictionary(claude.compactMap { p in p.session.map { (p.pid, $0) } },
+                                                        uniquingKeysWith: { a, _ in a }))
     for (dir, task) in tasks {
         if let i = workspaces.firstIndex(where: { contains($0.path, dir) }) { workspaces[i].tasks.append(task) }
     }
@@ -640,10 +651,17 @@ struct Target {
             var c = URLComponents(string: "conductor://workspace")!
             c.queryItems = [URLQueryItem(name: "id", value: conductorID)]
                 + (session.map { [URLQueryItem(name: "session", value: $0)] } ?? [])
+            // Activate first, then send the link. Conductor focuses itself when a
+            // link arrives, and an app that is already active isn't switched to
+            // again, so macOS stays on the current Space instead of moving to the
+            // one Conductor's window is on.
+            let url = c.url!
             if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.conductor.app") {
-                NSWorkspace.shared.open([c.url!], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+                NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration()) { _, _ in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSWorkspace.shared.open(url) }
+                }
             } else {
-                NSWorkspace.shared.open(c.url!)
+                NSWorkspace.shared.open(url)
             }
         } else {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
@@ -685,32 +703,27 @@ extension Workspace {
 struct AgentsView: View {
     @ObservedObject var store: AgentsStore
     @State private var showStale = false
-    @State private var selection: String?
-    @State private var showInspector = true
+    @State private var path: [String] = []
     private let grid = [GridItem(.adaptive(minimum: 380), spacing: 12, alignment: .top)]
 
     var body: some View {
-        ScrollView { content }
-            .inspector(isPresented: $showInspector) {
-                Group {
-                    if let w = store.workspaces.first(where: { $0.id == selection }) {
-                        WorkspaceDetail(workspace: w)
+        NavigationStack(path: $path) {
+            ScrollView { content }
+                .navigationTitle("Agents")
+                .navigationSubtitle("\(store.count(.needsYou)) need you · \(store.count(.working)) working · \(store.workspaces.count) workspaces")
+                .navigationDestination(for: String.self) { id in
+                    if let w = store.workspaces.first(where: { $0.id == id }) {
+                        WorkspacePage(workspace: w)
                     } else {
-                        ContentUnavailableView("No Selection", systemImage: "sidebar.right",
-                                               description: Text("Click a workspace to see its agents and background tasks."))
+                        ContentUnavailableView("Workspace Closed", systemImage: "xmark.circle",
+                                               description: Text("This workspace is no longer open."))
                     }
                 }
-                .inspectorColumnWidth(min: 280, ideal: 340, max: 480)
-            }
-            .toolbar {
-                Button { showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right") }
-            }
+        }
     }
 
     func card(_ w: Workspace) -> some View {
-        WorkspaceCard(workspace: w, isSelected: w.id == selection)
-            .onTapGesture(count: 2) { w.target.open() }
-            .onTapGesture { selection = w.id }
+        WorkspaceCard(workspace: w).onTapGesture { path.append(w.id) }
     }
 
     var content: some View {
@@ -769,8 +782,8 @@ struct AgentsView: View {
     }
 }
 
-let needsColor = Color.orange
-let workingColor = Color.green
+var needsColor: Color { palette.needs }
+var workingColor: Color { palette.working }
 
 func ago(_ d: Date?) -> String {
     guard let d else { return "–" }
@@ -787,7 +800,6 @@ func color(_ s: Status) -> Color {
 
 struct WorkspaceCard: View {
     let workspace: Workspace
-    let isSelected: Bool
     @State private var hovering = false
 
     var body: some View {
@@ -814,7 +826,7 @@ struct WorkspaceCard: View {
             }
             ForEach(w.agents) { AgentRow(agent: $0) }
             if let m = w.lead?.lastMessage {
-                Text(m).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                Text(markdown(m)).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if !w.tasks.isEmpty { TaskList(tasks: w.tasks) }
@@ -837,8 +849,6 @@ struct WorkspaceCard: View {
                 .frame(width: 3)
         }
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(Color.accentColor, lineWidth: isSelected ? 2 : 0))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .contextMenu { WorkspaceActions(workspace: w) }
@@ -968,77 +978,5 @@ struct WorkspaceActions: View {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(workspace.path, forType: .string)
         }
-    }
-}
-
-struct WorkspaceDetail: View {
-    let workspace: Workspace
-
-    var body: some View {
-        let w = workspace
-        Form {
-            Section {
-                LabeledContent("Repository", value: w.repo.isEmpty ? "–" : w.repo)
-                LabeledContent("Branch", value: w.branch ?? "–")
-                if let c = w.createdAt {
-                    LabeledContent("Created") {
-                        Text("\(c.formatted(date: .abbreviated, time: .shortened)) (\(ago(c)) ago)")
-                    }
-                }
-                LabeledContent("Last activity", value: w.lastActivity.map { "\(ago($0)) ago" } ?? "–")
-                LabeledContent("Source", value: w.source.rawValue)
-                LabeledContent("Path") {
-                    Text(w.path).textSelection(.enabled).lineLimit(3).multilineTextAlignment(.trailing)
-                }
-            } header: {
-                Text(w.title).font(.headline)
-            }
-
-            Section("Agents") {
-                if w.agents.isEmpty { Text("None").foregroundStyle(.secondary) }
-                ForEach(w.agents) { a in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label {
-                            Text(a.title).fontWeight(.medium)
-                        } icon: {
-                            Image(systemName: a.kind == .codex ? "terminal" : "sparkle")
-                                .foregroundStyle(a.kind == .codex ? codexBlue : claudeOrange)
-                        }
-                        Text("\(capitalized(a.label)) · \(ago(a.since)) · \(a.source.rawValue)")
-                            .font(.caption)
-                            .foregroundStyle(a.status == .needsYou ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
-                        if let d = a.detail { Text(d).font(.callout).textSelection(.enabled) }
-                        if let m = a.lastMessage {
-                            Text(m).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-
-            if !w.tasks.isEmpty {
-                Section("Background") {
-                    ForEach(w.tasks.sorted { $0.running && !$1.running }) { t in
-                        HStack(alignment: .firstTextBaseline) {
-                            Image(systemName: t.isCommand ? "terminal" : "person.2")
-                                .foregroundStyle(.secondary).frame(width: 18)
-                            Text(t.title)
-                                .font(t.isCommand ? .system(.callout, design: .monospaced) : .callout)
-                                .lineLimit(3)
-                                .textSelection(.enabled)
-                            Spacer()
-                            Text(t.running ? "Running · \(ago(t.since))" : "Done")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-
-            Section {
-                Button("Open in \(w.target.appName)") { w.target.open() }
-                Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: w.path)]) }
-            }
-        }
-        .formStyle(.grouped)
     }
 }

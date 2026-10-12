@@ -23,12 +23,15 @@ Every open workspace and running agent, grouped by what needs you:
 - **Workspace age** on every card: amber after 2 days, red after 7.
 - **Subagents** (Claude Code and Codex) and **running commands**, such as a test
   run or a polling loop, with how long each has been going.
-- **Details panel**: click a card to see its repo, branch, creation date, path,
-  every agent's full last message, and every subagent and command.
-- **Double-click to jump there**: a Conductor card opens that workspace and chat,
-  and a herdr card focuses that pane, bringing Conductor or the terminal forward
-  on whichever display or Space it's on. Right-click to reveal the folder or
-  copy its path.
+- **Workspace page**: click a card for a page with an activity graph of the
+  workspace, its agents and everything each one started (subagents, nested
+  subagents, commands), linked to the agent that started it and animated while
+  running. Below it: every agent's full last message, every subagent and
+  command, and the workspace's details. The back button returns to all agents.
+- **Open in Conductor or herdr**: opens that Conductor workspace and chat, or
+  focuses that herdr pane, bringing Conductor or the terminal forward on
+  whichever display or Space it's on. Right-click a card to reveal the folder
+  or copy its path.
 - **Notifications** when an agent starts needing you, with its last message.
   Clicking one jumps to that agent.
 
@@ -47,6 +50,10 @@ Refreshes every 5 seconds.
 ### Menu bar
 
 A single menu bar icon that brings up the AgentBar window.
+
+### Themes
+
+Settings (⌘,) has five color themes: Aurora, Ember, Ocean, Classic and Mono.
 
 ## Install
 
