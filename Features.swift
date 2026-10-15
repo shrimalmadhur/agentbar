@@ -106,13 +106,21 @@ final class FeaturesStore: ObservableObject {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = true
         panel.prompt = "Add"
-        panel.message = "Choose each repo's main clone"
+        panel.message = "Choose repos' main clones, or a folder of them"
         guard panel.runModal() == .OK else { return }
-        let picked = panel.urls.map(\.path).filter { FileManager.default.fileExists(atPath: $0 + "/.git") }
-        if picked.count < panel.urls.count { problem = "Skipped folders that aren't git repos." }
+        let fm = FileManager.default
+        func isRepo(_ path: String) -> Bool { fm.fileExists(atPath: path + "/.git") }
+        // A folder that isn't a repo stands for the repos directly inside it.
+        let picked = panel.urls.map(\.path).flatMap { p in
+            isRepo(p) ? [p] : ((try? fm.contentsOfDirectory(atPath: p)) ?? []).sorted().map { p + "/" + $0 }.filter(isRepo)
+        }
         // Agents find a repo by its folder name, so two repos can't share one.
-        let taken = Set(s.repos.map { URL(fileURLWithPath: $0).lastPathComponent })
-        save(s.name, repos: s.repos + picked.filter { !taken.contains(URL(fileURLWithPath: $0).lastPathComponent) })
+        var repos = s.repos
+        for p in picked where !repos.contains(where: { URL(fileURLWithPath: $0).lastPathComponent == URL(fileURLWithPath: p).lastPathComponent }) {
+            repos.append(p)
+        }
+        save(s.name, repos: repos)
+        if picked.isEmpty { problem = "No git repos in what you picked." }
         await reload()
     }
 
@@ -173,20 +181,23 @@ struct FeaturesView: View {
 
     func repoSet(_ s: RepoSet) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(s.name).font(.system(size: 17, weight: .semibold))
-            HStack(spacing: 6) {
+            HStack(spacing: 12) {
+                Text(s.name).font(.system(size: 17, weight: .semibold))
+                Button("Add Repos…") { Task { await store.addRepos(to: s) } }.controlSize(.small)
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 6)], alignment: .leading, spacing: 6) {
                 ForEach(s.repos, id: \.self) { r in
                     HStack(spacing: 5) {
-                        Text(URL(fileURLWithPath: r).lastPathComponent)
+                        Text(URL(fileURLWithPath: r).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 0)
                         Button { Task { await store.remove(r, from: s) } } label: { Image(systemName: "xmark").font(.system(size: 9)) }
                             .buttonStyle(.plain).foregroundStyle(.secondary)
                     }
                     .font(mono(11))
-                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
                     .surface()
                     .help(r)
                 }
-                Button("Add Repos…") { Task { await store.addRepos(to: s) } }.controlSize(.small)
             }
             HStack {
                 input("New feature", Binding(get: { newFeature[s.name] ?? "" }, set: { newFeature[s.name] = $0 }))
