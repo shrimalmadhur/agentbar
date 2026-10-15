@@ -230,8 +230,7 @@ struct Panel<Content: View>: View {
         content
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.04)))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
+            .surface()
     }
 }
 
@@ -244,21 +243,21 @@ struct WorkspacePage: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     summary(w)
-                    section("Activity", "point.3.connected.trianglepath.dotted") {
+                    section("Activity") {
                         ScrollView(.horizontal) { AgentGraph(root: graph(w), width: geo.size.width - 56) }
-                            .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .fill(LinearGradient(colors: palette.canvas, startPoint: .topLeading, endPoint: .bottomTrailing)))
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.08)))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Chrome.hairline))
                     }
-                    section("Agents", "sparkles") {
+                    section("Agents") {
                         VStack(spacing: 10) {
                             if w.agents.isEmpty { Panel { Text("No agents").foregroundStyle(.secondary) } }
                             ForEach(w.agents) { agentPanel($0) }
                         }
                     }
                     if !w.tasks.isEmpty {
-                        section("Background", "arrow.triangle.branch") {
+                        section("Background") {
                             Panel {
                                 VStack(alignment: .leading, spacing: 10) {
                                     ForEach(w.tasks.sorted { $0.running && !$1.running }) { taskRow($0) }
@@ -266,7 +265,7 @@ struct WorkspacePage: View {
                             }
                         }
                     }
-                    section("Workspace", "folder") {
+                    section("Workspace") {
                         Panel {
                             Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
                                 info("Repository", w.repo.isEmpty ? "–" : w.repo)
@@ -295,36 +294,34 @@ struct WorkspacePage: View {
         case .idle: (w.isStale ? "Stale" : "Idle", .secondary)
         }
         return HStack(spacing: 10) {
-            Label(label, systemImage: w.status == .needsYou ? "hand.raised.fill" : w.status == .working ? "bolt.fill" : "moon.fill")
-                .font(.callout.weight(.semibold))
-                .padding(.horizontal, 10).padding(.vertical, 5)
-                .background(Capsule().fill(tint.opacity(0.16)))
-                .foregroundStyle(tint)
+            HStack(spacing: 6) {
+                Circle().fill(tint).frame(width: 7, height: 7)
+                Text(label).font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(tint)
             AgeChip(createdAt: w.createdAt)
-            Text(w.source.rawValue).font(.caption.weight(.semibold))
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(Capsule().fill(Color.primary.opacity(0.07)))
+            Text(w.source.rawValue.lowercased()).font(mono(11)).foregroundStyle(.secondary)
             Spacer()
             stat(w.agents.count, "agent", brand(w.lead?.kind ?? .claude))
             stat(subs, "subagent", palette.subagent)
             stat(cmds, "command", palette.command)
             Button { w.target.open() } label: { Label("Open in \(w.target.appName)", systemImage: "arrow.up.forward.app") }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .padding(.leading, 6)
         }
     }
 
     func stat(_ n: Int, _ noun: String, _ tint: Color) -> some View {
         HStack(spacing: 5) {
-            Text("\(n)").font(.system(.title3, design: .rounded).weight(.bold)).foregroundStyle(n > 0 ? tint : .secondary)
-            Text(n == 1 ? noun : noun + "s").font(.caption).foregroundStyle(.secondary)
+            Text("\(n)").font(mono(15, .semibold)).foregroundStyle(n > 0 ? tint : .secondary)
+            Text(n == 1 ? noun : noun + "s").font(mono(11)).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 6)
     }
 
-    func section<Content: View>(_ title: String, _ icon: String, @ViewBuilder _ content: () -> Content) -> some View {
+    func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: icon).font(.headline)
+            Text(title).sectionLabel()
             content()
         }
     }
@@ -340,7 +337,7 @@ struct WorkspacePage: View {
                         .frame(width: 28, height: 28)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(a.title).font(.headline).lineLimit(1)
-                        Text(a.source.rawValue).font(.caption).foregroundStyle(.secondary)
+                        Text(a.source.rawValue.lowercased()).font(mono(10)).foregroundStyle(.secondary)
                     }
                     Spacer()
                     StatusPill(status: a.status, label: a.label, since: a.since)
@@ -373,7 +370,7 @@ struct WorkspacePage: View {
     func info(_ label: String, _ value: String) -> some View {
         GridRow {
             Text(label).foregroundStyle(.secondary)
-            Text(value).textSelection(.enabled)
+            Text(value).font(mono(12)).textSelection(.enabled)
         }
     }
 }

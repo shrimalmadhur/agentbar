@@ -731,11 +731,11 @@ struct AgentsView: View {
             if store.workspaces.isEmpty {
                 Text("No open workspaces or running agents found.").foregroundStyle(.secondary)
             }
-            section("Needs you", icon: "hand.raised.fill", tint: needsColor, store.section(.needsYou))
+            section("Needs you", tint: needsColor, store.section(.needsYou))
             // Idle comes before Working: an idle agent has finished and is
             // waiting on your next step; a working one doesn't need you yet.
-            section("Idle", icon: "moon.fill", tint: .secondary, store.section(.idle))
-            section("Working", icon: "bolt.fill", tint: workingColor, store.section(.working))
+            section("Idle", tint: .secondary, store.section(.idle))
+            section("Working", tint: workingColor, store.section(.working))
             staleSection
             ForEach(store.problems, id: \.self) { p in
                 Label(p, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
@@ -744,19 +744,19 @@ struct AgentsView: View {
         .padding(20)
     }
 
-    func header(_ title: String, icon: String, tint: Color, count: Int) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon).foregroundStyle(tint)
-            Text(title.uppercased()).font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
-            Text("\(count)").font(.system(size: 11, weight: .bold)).foregroundStyle(.tertiary)
+    func header(_ title: String, tint: Color, count: Int) -> some View {
+        HStack(spacing: 7) {
+            Circle().fill(tint).frame(width: 6, height: 6)
+            Text(title).sectionLabel()
+            Text("\(count)").font(mono(11)).foregroundStyle(.tertiary)
         }
     }
 
     @ViewBuilder
-    func section(_ title: String, icon: String, tint: Color, _ items: [Workspace]) -> some View {
+    func section(_ title: String, tint: Color, _ items: [Workspace]) -> some View {
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                header(title, icon: icon, tint: tint, count: items.count)
+                header(title, tint: tint, count: items.count)
                 LazyVGrid(columns: grid, spacing: 12) { ForEach(items) { card($0) } }
             }
         }
@@ -768,7 +768,7 @@ struct AgentsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Button { withAnimation(.easeOut(duration: 0.15)) { showStale.toggle() } } label: {
                     HStack(spacing: 6) {
-                        header("Stale · nothing for 3+ days", icon: "archivebox.fill", tint: .brown, count: stale.count)
+                        header("Stale · nothing for 3+ days", tint: .brown, count: stale.count)
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
                             .rotationEffect(.degrees(showStale ? 90 : 0))
                         Spacer()
@@ -808,11 +808,12 @@ struct WorkspaceCard: View {
         let w = workspace
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Circle().fill(color(w.status).opacity(w.status == .idle ? 0.5 : 1)).frame(width: 7, height: 7)
                         if !w.repo.isEmpty && w.repo != w.name {
                             Text(w.repo).foregroundStyle(.secondary)
-                            Text("/").foregroundStyle(.tertiary)
+                            Text("/").foregroundStyle(.tertiary).padding(.horizontal, -3)
                         }
                         Text(w.name).fontWeight(.semibold)
                     }
@@ -820,7 +821,8 @@ struct WorkspaceCard: View {
                     .lineLimit(1)
                     if let b = w.branch {
                         Label(b, systemImage: "arrow.triangle.branch")
-                            .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+                            .font(mono(11)).foregroundStyle(.secondary).lineLimit(1)
+                            .padding(.leading, 14)
                     }
                 }
                 Spacer(minLength: 6)
@@ -832,25 +834,11 @@ struct WorkspaceCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if !w.tasks.isEmpty { TaskList(tasks: w.tasks) }
-            HStack(spacing: 6) {
-                Text(w.source.rawValue).font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(Color.primary.opacity(0.07)))
-                Text(ago(w.lastActivity) == "now" ? "active now" : "active \(ago(w.lastActivity)) ago").font(.caption2)
-                Spacer()
-            }
-            .foregroundStyle(.secondary)
+            Text("\(w.source.rawValue.lowercased()) · \(ago(w.lastActivity) == "now" ? "active now" : "active \(ago(w.lastActivity)) ago")")
+                .font(mono(10)).foregroundStyle(.tertiary)
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color.primary.opacity(hovering ? 0.08 : 0.04)))
-        .overlay(alignment: .leading) {
-            // Status stripe down the card's left edge.
-            UnevenRoundedRectangle(topLeadingRadius: 12, bottomLeadingRadius: 12)
-                .fill(color(w.status).opacity(w.status == .idle ? 0.3 : 1))
-                .frame(width: 3)
-        }
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
+        .surface(hovering: hovering, border: w.status == .needsYou ? needsColor.opacity(0.45) : Chrome.hairline)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .contextMenu { WorkspaceActions(workspace: w) }
@@ -900,8 +888,8 @@ struct TaskList: View {
             Text([subagents > 0 ? "\(subagents) subagent\(subagents == 1 ? "" : "s") running" : nil,
                   commands > 0 ? "\(commands) command\(commands == 1 ? "" : "s") running" : nil,
                   subagents + commands == 0 ? "Recently finished" : nil]
-                .compactMap { $0 }.joined(separator: " · ").uppercased())
-                .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+                .compactMap { $0 }.joined(separator: " · "))
+                .font(mono(10)).foregroundStyle(.secondary).textCase(.lowercase)
             ForEach(sorted.prefix(4)) { t in
                 HStack(spacing: 8) {
                     Image(systemName: t.isCommand ? "chevron.right.square.fill" : "person.2.fill")
@@ -918,11 +906,11 @@ struct TaskList: View {
                 .help(t.title)
             }
             if sorted.count > 4 {
-                Text("+\(sorted.count - 4) more").font(.caption2).foregroundStyle(.secondary).padding(.leading, 24)
+                Text("+\(sorted.count - 4) more").font(mono(10)).foregroundStyle(.secondary).padding(.leading, 24)
             }
         }
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.04)))
+        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Chrome.background))
     }
 }
 
@@ -941,11 +929,8 @@ struct StatusPill: View {
             Circle().fill(tint).frame(width: 6, height: 6)
                 .opacity(status == .working && pulse ? 0.3 : 1)
                 .animation(.easeInOut(duration: 0.9).repeatForever(), value: pulse)
-            Text("\(label) · \(ago(since))")
-                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+            Text("\(label) · \(ago(since))").font(mono(10))
         }
-        .padding(.horizontal, 7).padding(.vertical, 3)
-        .background(Capsule().fill(tint.opacity(status == .idle ? 0.08 : 0.15)))
         .foregroundStyle(status == .idle ? Color.secondary : tint)
         .onAppear { pulse = true }
     }
@@ -958,10 +943,8 @@ struct AgeChip: View {
         if let createdAt {
             let days = -createdAt.timeIntervalSinceNow / 86400
             let tint: Color = days > 7 ? Color(red: 0.95, green: 0.33, blue: 0.30) : days > 2 ? needsColor : .secondary
-            Label(ago(createdAt) == "now" ? "new" : ago(createdAt) + " old", systemImage: "clock")
-                .font(.system(size: 10, weight: .semibold))
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(Capsule().fill(tint.opacity(0.12)))
+            Text(ago(createdAt) == "now" ? "new" : ago(createdAt) + " old")
+                .font(mono(10))
                 .foregroundStyle(tint)
                 .help("Worktree created \(createdAt.formatted(date: .abbreviated, time: .shortened))")
         }

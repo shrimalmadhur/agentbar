@@ -491,7 +491,7 @@ struct AccountsView: View {
 
             if let d = store.updatedAt {
                 (Text("Checked ") + Text(d, style: .relative) + Text(" ago"))
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(mono(10)).foregroundStyle(.tertiary)
             }
         }
         .padding(20)
@@ -499,9 +499,9 @@ struct AccountsView: View {
 
     func sectionHeader(_ title: String, icon: String, tint: Color, detail: String) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: icon).foregroundStyle(tint)
-            Text(title).font(.system(size: 13, weight: .semibold))
-            Text(detail).font(.caption).foregroundStyle(.secondary)
+            Image(systemName: icon).font(.system(size: 11)).foregroundStyle(tint)
+            Text(title).sectionLabel()
+            Text(detail).font(mono(11)).foregroundStyle(.tertiary)
         }
     }
 }
@@ -522,14 +522,10 @@ struct AccountCard: View {
                     Text(slot.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                     HStack(spacing: 6) {
                         if let t = slot.tier {
-                            Text(t)
-                                .font(.system(size: 9, weight: .bold))
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(Capsule().fill(tint.opacity(0.15)))
-                                .foregroundStyle(tint)
+                            Text(t).font(mono(10, .medium)).foregroundStyle(tint)
                         }
                         if let e = slot.email, e != slot.name {
-                            Text(e).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            Text(e).font(mono(10)).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
                 }
@@ -547,14 +543,7 @@ struct AccountCard: View {
             }
         }
         .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(hovering && !isActive ? 0.08 : 0.04)))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(isActive ? tint : Color.primary.opacity(0.08), lineWidth: isActive ? 1.5 : 1))
-        .scaleEffect(hovering && !isActive ? 1.01 : 1)
-        .animation(.easeOut(duration: 0.15), value: hovering)
+        .surface(hovering: hovering && !isActive, border: isActive ? tint.opacity(0.6) : Chrome.hairline)
         .contentShape(Rectangle())
         .onTapGesture { if !isActive && !isSwitching { onSwitch?() } }
         .onHover { hovering = $0 }
@@ -564,19 +553,17 @@ struct AccountCard: View {
         if isSwitching {
             ProgressView().controlSize(.small)
         } else if isActive {
-            HStack(spacing: 4) {
-                Circle().fill(.green).frame(width: 6, height: 6)
-                Text("ACTIVE").font(.system(size: 9, weight: .heavy))
+            HStack(spacing: 5) {
+                Circle().fill(workingColor).frame(width: 6, height: 6)
+                Text("active").font(mono(10))
             }
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(Capsule().fill(Color.green.opacity(0.15)))
-            .foregroundStyle(.green)
+            .foregroundStyle(workingColor)
         } else if onSwitch != nil {
             Text("Switch")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 11, weight: .medium))
                 .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Capsule().fill(hovering ? AnyShapeStyle(tint) : AnyShapeStyle(Color.primary.opacity(0.08))))
-                .foregroundStyle(hovering ? .white : .primary)
+                .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(hovering ? Chrome.selected : Chrome.raised))
+                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Chrome.hairline))
         }
     }
 }
@@ -596,7 +583,7 @@ struct UsageGauge: View {
             .animation(.spring(duration: 0.6), value: window.pct)
             VStack(alignment: .leading, spacing: 1) {
                 Text(label).font(.system(size: 11, weight: .semibold))
-                Text(resetText(window.resetsAt)).font(.caption2).foregroundStyle(.secondary)
+                Text(resetText(window.resetsAt)).font(mono(10)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
         }

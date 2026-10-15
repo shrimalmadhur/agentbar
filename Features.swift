@@ -150,7 +150,7 @@ struct FeaturesView: View {
                 }
                 ForEach(store.sets) { repoSet($0) }
                 HStack {
-                    TextField("New workspace", text: $newSet).frame(width: 220)
+                    input("New workspace", $newSet)
                     Button("Create") {
                         let n = newSet
                         newSet = ""
@@ -173,24 +173,23 @@ struct FeaturesView: View {
 
     func repoSet(_ s: RepoSet) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(s.name).font(.title2.weight(.semibold))
+            Text(s.name).font(.system(size: 17, weight: .semibold))
             HStack(spacing: 6) {
                 ForEach(s.repos, id: \.self) { r in
-                    HStack(spacing: 4) {
+                    HStack(spacing: 5) {
                         Text(URL(fileURLWithPath: r).lastPathComponent)
-                        Button { Task { await store.remove(r, from: s) } } label: { Image(systemName: "xmark") }
+                        Button { Task { await store.remove(r, from: s) } } label: { Image(systemName: "xmark").font(.system(size: 9)) }
                             .buttonStyle(.plain).foregroundStyle(.secondary)
                     }
-                    .font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Capsule().fill(Color.primary.opacity(0.07)))
+                    .font(mono(11))
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .surface()
                     .help(r)
                 }
                 Button("Add Repos…") { Task { await store.addRepos(to: s) } }.controlSize(.small)
             }
             HStack {
-                TextField("New feature", text: Binding(get: { newFeature[s.name] ?? "" }, set: { newFeature[s.name] = $0 }))
-                    .frame(width: 220)
+                input("New feature", Binding(get: { newFeature[s.name] ?? "" }, set: { newFeature[s.name] = $0 }))
                 Button("Start Lead") {
                     let f = newFeature[s.name] ?? ""
                     newFeature[s.name] = nil
@@ -205,7 +204,7 @@ struct FeaturesView: View {
 
     func feature(_ f: Feature, in s: RepoSet) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(f.name, systemImage: "arrow.triangle.branch").font(.headline)
+            Label(f.name, systemImage: "arrow.triangle.branch").font(mono(12, .medium)).foregroundStyle(.secondary)
             LazyVGrid(columns: grid, spacing: 12) {
                 let l = lead(f, in: s)
                 WorkspaceCard(workspace: l).onTapGesture { l.target.open() }
@@ -215,12 +214,25 @@ struct FeaturesView: View {
                         ?? Workspace(path: lane.path, repo: "", name: URL(fileURLWithPath: lane.path).lastPathComponent, source: .herdr)
                     VStack(alignment: .leading, spacing: 4) {
                         WorkspaceCard(workspace: w).onTapGesture { w.target.open() }
-                        Text("\(lane.changed) uncommitted · \(lane.ahead) commit\(lane.ahead == 1 ? "" : "s") ahead")
-                            .font(.caption2).foregroundStyle(.secondary).padding(.leading, 4)
+                        HStack(spacing: 10) {
+                            Text("\(lane.changed) uncommitted").foregroundStyle(lane.changed > 0 ? needsColor : .secondary)
+                            Text("\(lane.ahead) ahead").foregroundStyle(lane.ahead > 0 ? workingColor : .secondary)
+                        }
+                        .font(mono(10)).padding(.leading, 4)
                     }
                 }
             }
         }
+    }
+
+    func input(_ placeholder: String, _ text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13))
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .frame(width: 240)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Chrome.raised))
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Chrome.hairline))
     }
 
     /// Every feature's lead runs in the workspace's main/ folder, so the
