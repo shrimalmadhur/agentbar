@@ -2,7 +2,8 @@
 
 A macOS app for keeping track of your coding agents. It shows what every
 Claude Code and Codex agent on your Mac is doing, across Conductor, herdr and
-plain terminals, and lets you switch between Claude Code accounts.
+plain terminals, runs features that span several repos, and lets you switch
+between Claude Code accounts.
 
 <img src="docs/agents.png" alt="Agents page: workspaces grouped by Needs you, Working and Idle, with subagents and running commands" width="720">
 
@@ -37,6 +38,24 @@ Every open workspace and running agent, grouped by what needs you:
   Clicking one jumps to that agent.
 
 Refreshes every 5 seconds.
+
+### Features (multi-repo)
+
+- **Workspaces**: a set of repos you pick, by their main clones. Add and
+  remove repos at any time.
+- **Lead agent**: starting a feature starts a Claude Code agent that reads
+  every repo at `origin/main` and can't change files. It works out the feature
+  with you, uses SageOx's read commands (`ox query`, `ox code search`,
+  `ox conversation`) per repo, writes a plan, and asks which one repo should
+  keep it.
+- **One agent per repo**: once you approve, the lead starts an agent in each
+  repo it needs, in a worktree on a branch named after the feature. Each
+  agent follows its own repo's CLAUDE.md and SageOx setup.
+- **One lane per repo**: the lead's card and each repo's card, with status,
+  subagents, commands, last message, uncommitted files and commits ahead.
+  Clicking a card focuses that agent in herdr.
+
+Needs herdr. Agents run in a herdr workspace per feature, one tab per repo.
 
 ### Accounts
 
@@ -83,8 +102,9 @@ session to use the one you switched to.
 
 ## How it works
 
-AgentBar only reads what the tools already write to disk. The one exception is
-switching accounts, which writes Claude Code's login in the Keychain.
+AgentBar only reads what the tools already write to disk. The exceptions are
+switching accounts, which writes Claude Code's login in the Keychain, and
+starting features, which creates worktrees and herdr workspaces.
 
 ### Agents page
 
@@ -105,6 +125,23 @@ thread (Codex) in the last minute. Finished ones stay listed for 10 minutes.
 
 Clicking a Conductor card opens `conductor://workspace?id=<workspace>&session=<chat>`.
 That link isn't in Conductor's docs; it's handled by the Conductor app itself.
+
+### Features page
+
+`agentbar-feature` (bundled in the app) does the work, and its header lists
+the folders under `~/agentbar/<workspace>/`.
+
+- `agentbar-feature lead <workspace> <feature>` fetches each repo, moves its
+  read-only checkout in `main/` to `origin/main`, and starts the lead in a new
+  herdr workspace. The lead runs with Edit, Write and NotebookEdit disabled;
+  Read, Grep, Glob and a short list of `git` and `ox` read commands run without
+  asking, and anything else asks you first.
+- `agentbar-feature delegate <repo>` is what the lead runs to start a repo's
+  agent, so you approve each one. It adds a worktree of that repo on the
+  feature's branch and starts `claude` with the task in a new herdr tab.
+
+Claude Code asks whether to trust each new folder. Trust `~/agentbar` once
+(run `claude` there and accept) and it covers every lead and repo agent.
 
 ### Accounts page
 

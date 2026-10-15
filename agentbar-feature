@@ -1,0 +1,102 @@
+#!/bin/sh
+# Starts multi-repo features for AgentBar's Features page. Agents run in herdr.
+#
+#   agentbar-feature lead <workspace> <feature>
+#       Refreshes the workspace's read-only checkouts of origin/main and
+#       starts a lead agent on them in a new herdr workspace.
+#   agentbar-feature delegate <repo>    (task on stdin)
+#       Run by the lead: creates a worktree of <repo> on branch <feature> and
+#       starts an agent in it, in a new tab of the feature's herdr workspace.
+#
+# Layout, under ~/agentbar/<workspace>/:
+#   repos.txt              the repos' main clones, one path per line
+#   main/<repo>/           detached worktree at origin/main: what the lead reads
+#   <feature>/.herdr       the feature's herdr workspace id
+#   <feature>/.tasks/      the task each repo's agent was started with
+#   <feature>/<repo>/      worktree on branch <feature>, one agent each
+set -e
+# GUI apps don't get the login shell's PATH.
+PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+root="$HOME/agentbar"
+self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+
+die() { echo "agentbar-feature: $*" >&2; exit 1; }
+name_ok() { echo "$1" | grep -Eqx '[A-Za-z0-9._-]+' || die "'$1': use letters, digits, '.', '_' or '-'"; }
+base() { git -C "$1" rev-parse --abbrev-ref origin/HEAD 2>/dev/null || echo origin/main; }
+
+lead() {
+    name_ok "$1"; name_ok "$2"
+    ws="$root/$1"; feat="$ws/$2"
+    [ -f "$ws/repos.txt" ] || die "no workspace $1"
+    [ -e "$feat" ] && die "feature $2 already exists"
+    mkdir -p "$ws/main"
+    repos=""
+    while read -r src; do
+        [ -n "$src" ] || continue
+        r=$(basename "$src"); snap="$ws/main/$r"
+        git -C "$src" fetch -q origin
+        if [ -e "$snap" ]; then git -C "$snap" checkout -q --detach "$(base "$src")"
+        else git -C "$src" worktree add -q --detach "$snap" "$(base "$src")"; fi
+        repos="$repos $r"
+    done < "$ws/repos.txt"
+    # Checkouts of repos removed from the workspace. They're read-only, so
+    # nothing is lost.
+    for snap in "$ws"/main/*/; do
+        [ -d "$snap" ] || continue
+        snap=${snap%/}
+        echo " $repos " | grep -q " $(basename "$snap") " || git -C "$snap" worktree remove --force "$snap"
+    done
+
+    mkdir -p "$feat/.tasks"
+    cat > "$feat/.lead-prompt.md" <<EOF
+You are the lead for the feature "$2" in the workspace "$1". You plan; you never change files.
+
+The workspace's repos are checked out at origin/main in the folders of the current directory:$repos. They are read-only.
+
+For team context, run SageOx commands from inside a repo's folder, e.g. \`cd ox && ox query "…"\`, \`ox code search …\`, \`ox conversation list\`. Repos can belong to different SageOx teams. Don't run \`ox agent prime\`.
+
+1. Work out the feature with the user and which repos it changes.
+2. Write a plan: a task per repo, the contract between repos (APIs, schemas, shared types), and the merge order.
+3. Ask the user which repo the full plan should be stored in. It's stored in that one repo only.
+4. Once the user approves, start each repo's agent:
+
+    '$self' delegate <repo> <<'TASK'
+    <the task>
+    TASK
+
+   The task for the repo holding the plan includes the full plan and asks that agent to save it where that repo keeps plans. Every other repo's task has only its own work, the contract, and which repo holds the plan.
+
+Each delegated agent works in its own worktree of its repo, on the branch "$2", and follows that repo's CLAUDE.md and SageOx setup.
+EOF
+    out=$(herdr workspace create --cwd "$ws/main" --label "$1: $2" --env "AGENTBAR_FEATURE=$feat" --no-focus)
+    echo "$out" | jq -r .result.workspace.workspace_id > "$feat/.herdr"
+    pane=$(echo "$out" | jq -r .result.root_pane.pane_id)
+    # Read, Grep and Glob need no approval; any other command does.
+    herdr pane run "$pane" "claude --append-system-prompt-file '$feat/.lead-prompt.md' \
+--disallowedTools Edit Write NotebookEdit \
+--allowedTools 'Bash(git fetch:*)' 'Bash(git log:*)' 'Bash(git show:*)' 'Bash(git diff:*)' \
+'Bash(ox query:*)' 'Bash(ox code search:*)' 'Bash(ox conversation:*)'" > /dev/null
+    echo "$pane"
+}
+
+delegate() {
+    feat=${AGENTBAR_FEATURE:?run this from a feature lead}
+    name_ok "$1"
+    ws=$(dirname "$feat"); branch=$(basename "$feat"); wt="$feat/$1"
+    src=$(grep -E "/$1\$" "$ws/repos.txt" | head -1)
+    [ -n "$src" ] || die "$1 isn't in this workspace"
+    [ -e "$wt" ] && die "$1 already has an agent for this feature"
+    git -C "$src" fetch -q origin
+    git -C "$src" worktree add -q -b "$branch" "$wt" "$(base "$src")"
+    cat > "$feat/.tasks/$1.md"
+    pane=$(herdr tab create --workspace "$(cat "$feat/.herdr")" --cwd "$wt" --label "$1" --no-focus \
+        | jq -r .result.root_pane.pane_id)
+    herdr pane run "$pane" "claude \"\$(cat '$feat/.tasks/$1.md')\"" > /dev/null
+    echo "started $1 in $wt"
+}
+
+case "$1" in
+    lead) shift; lead "$@" ;;
+    delegate) shift; delegate "$@" ;;
+    *) die "usage: agentbar-feature lead <workspace> <feature> | delegate <repo>" ;;
+esac

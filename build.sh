@@ -6,6 +6,7 @@ app=build/AgentBar.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp icon/AppIcon.icns "$app/Contents/Resources/"
+cp agentbar-feature "$app/Contents/Resources/"
 swiftc -O -parse-as-library *.swift -o "$app/Contents/MacOS/AgentBar"
 cat > "$app/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>

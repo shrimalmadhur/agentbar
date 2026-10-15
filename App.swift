@@ -2,9 +2,10 @@ import SwiftUI
 import UserNotifications
 
 // AgentBar: a window with an Agents page (what every coding agent on this Mac
-// is doing) and an Accounts page (Claude Code account switching and usage),
-// plus a menu bar icon that brings the window up, and a notification when an
-// agent starts needing you.
+// is doing), a Features page (features that span repos: a lead agent plans,
+// then one agent per repo builds), and an Accounts page (Claude Code account
+// switching and usage), plus a menu bar icon that brings the window up, and a
+// notification when an agent starts needing you.
 
 struct Failure: LocalizedError {
     let errorDescription: String?
@@ -69,8 +70,11 @@ enum Theme: String, CaseIterable, Identifiable {
 var palette: Palette { (Theme(rawValue: UserDefaults.standard.string(forKey: "theme") ?? "") ?? .aurora).palette }
 
 enum Page: String, CaseIterable, Identifiable {
-    case agents = "Agents", accounts = "Accounts"
+    case agents = "Agents", features = "Features", accounts = "Accounts"
     var id: Self { self }
+    var icon: String {
+        switch self { case .agents: "square.grid.2x2"; case .features: "square.stack.3d.up"; case .accounts: "person.2" }
+    }
 }
 
 @main
@@ -78,10 +82,11 @@ struct AgentBar: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
     @StateObject private var agents = AgentsStore()
     @StateObject private var accounts = AccountsStore()
+    @StateObject private var features = FeaturesStore()
 
     var body: some Scene {
         Window("AgentBar", id: "main") {
-            MainView(agents: agents, accounts: accounts)
+            MainView(agents: agents, accounts: accounts, features: features)
         }
         .defaultSize(width: 920, height: 700)
 
@@ -151,6 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 struct MainView: View {
     @ObservedObject var agents: AgentsStore
     @ObservedObject var accounts: AccountsStore
+    @ObservedObject var features: FeaturesStore
     @State private var page: Page? = .agents
     @AppStorage("theme") private var theme = Theme.aurora.rawValue
 
@@ -158,7 +164,7 @@ struct MainView: View {
         NavigationSplitView {
             List(selection: $page) {
                 ForEach(Page.allCases) { p in
-                    Label(p.rawValue, systemImage: p == .agents ? "square.grid.2x2" : "person.2")
+                    Label(p.rawValue, systemImage: p.icon)
                         .badge(p == .agents ? agents.count(.needsYou) : 0)
                         .tag(p)
                 }
@@ -176,6 +182,8 @@ struct MainView: View {
                 .toolbar {
                     Button { Task { await agents.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 }
+        case .features:
+            FeaturesView(store: features, agents: agents)
         case .accounts:
             AccountsView(store: accounts)
                 .navigationTitle("Accounts")
