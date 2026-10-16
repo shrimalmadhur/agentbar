@@ -19,7 +19,7 @@ Every open workspace and running agent, grouped by what needs you:
 - **Idle**: finished, waiting on your next step.
 - **Working**, including agents whose turn is over but whose subagents or
   commands are still running ("background tasks").
-- **Stale**: nothing for 3+ days; collapsed.
+- **Stale**: nothing for 2+ weeks; collapsed.
 - **Last message** from each agent on its card, so you can see what it's asking
   or where it stopped without switching to it.
 - **Workspace age** on every card: amber after 2 days, red after 7.

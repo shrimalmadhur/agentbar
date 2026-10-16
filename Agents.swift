@@ -58,7 +58,6 @@ struct Workspace: Identifiable {
     var createdAt: Date?
     var source: Source
     var agents: [Agent] = []
-    var updatedAt: Date?
     var conductorID: String?
     var tasks: [BackgroundTask] = []
 
@@ -67,9 +66,11 @@ struct Workspace: Identifiable {
     var status: Status {
         (agents.map(\.status) + (tasks.contains { $0.running } ? [.working] : [])).min() ?? .idle
     }
-    var lastActivity: Date? { ([updatedAt] + agents.map(\.since) + tasks.map(\.since)).compactMap { $0 }.max() }
+    // Not Conductor's workspace updated_at: Conductor sometimes rewrites it
+    // for every workspace at once.
+    var lastActivity: Date? { (agents.map(\.since) + tasks.map(\.since)).compactMap { $0 }.max() }
     var isStale: Bool {
-        status == .idle && (lastActivity.map { -$0.timeIntervalSinceNow > 3 * 86400 } ?? true)
+        status == .idle && (lastActivity.map { -$0.timeIntervalSinceNow > 14 * 86400 } ?? true)
     }
 }
 
@@ -331,7 +332,7 @@ func kind(_ s: String?) -> Kind {
 func conductorWorkspaces() throws -> [Workspace] {
     let rows = try query(conductorDB, """
         select w.id as wid, r.name as repo, w.directory_name as dir, w.workspace_path as path,
-               w.branch as branch, w.created_at as created, w.updated_at as wupdated,
+               w.branch as branch, w.created_at as created,
                s.id as sid, s.status as status, s.agent_type as agent, s.title as title,
                s.updated_at as supdated, s.claude_session_id as csid
         from workspaces w join repos r on r.id = w.repository_id
@@ -346,7 +347,7 @@ func conductorWorkspaces() throws -> [Workspace] {
             let path = r["path"] ?? "\(home)/conductor/workspaces/\(r["repo"] ?? "")/\(r["dir"] ?? "")"
             byID[wid] = Workspace(path: path, repo: r["repo"] ?? "", name: r["dir"] ?? "", branch: r["branch"],
                                   createdAt: parseDate(r["created"]), source: .conductor,
-                                  updatedAt: parseDate(r["wupdated"]), conductorID: wid)
+                                  conductorID: wid)
             order.append(wid)
         }
         guard let sid = r["sid"] else { continue }
@@ -807,7 +808,7 @@ struct AgentsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Button { withAnimation(.easeOut(duration: 0.15)) { showStale.toggle() } } label: {
                     HStack(spacing: 6) {
-                        header("Stale · nothing for 3+ days", tint: .brown, count: stale.count)
+                        header("Stale · nothing for 2+ weeks", tint: .brown, count: stale.count)
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
                             .rotationEffect(.degrees(showStale ? 90 : 0))
                         Spacer()
