@@ -20,7 +20,13 @@ let home = FileManager.default.homeDirectoryForCurrentUser.path
 let conductorDB = home + "/Library/Application Support/com.conductor.app/conductor.db"
 
 enum Kind { case claude, codex, other }
-enum Source: String { case conductor = "Conductor", herdr, terminal = "Terminal", job = "Background job" }
+enum Source: String, CaseIterable {
+    case conductor = "Conductor", herdr, terminal = "Terminal", job = "Background job"
+
+    var tint: Color {
+        switch self { case .conductor: hex(0x5FC9C0); case .herdr: hex(0xE07FB8); case .terminal: .secondary; case .job: hex(0xD9C26A) }
+    }
+}
 
 // Declaration order is display order.
 enum Status: Int, Comparable {
@@ -704,6 +710,7 @@ struct AgentsView: View {
     @ObservedObject var store: AgentsStore
     @State private var showStale = false
     @State private var path: [String] = []
+    @AppStorage("agentsSource") private var filter = "" // a Source's rawValue; empty shows every source
     private let grid = [GridItem(.adaptive(minimum: 380), spacing: 12, alignment: .top)]
 
     var body: some View {
@@ -730,6 +737,8 @@ struct AgentsView: View {
         VStack(alignment: .leading, spacing: 22) {
             if store.workspaces.isEmpty {
                 Text("No open workspaces or running agents found.").foregroundStyle(.secondary)
+            } else {
+                filters
             }
             section("Needs you", tint: needsColor, store.section(.needsYou))
             // Idle comes before Working: an idle agent has finished and is
@@ -744,6 +753,35 @@ struct AgentsView: View {
         .padding(20)
     }
 
+    func shown(_ items: [Workspace]) -> [Workspace] { filter.isEmpty ? items : items.filter { $0.source.rawValue == filter } }
+
+    var filters: some View {
+        HStack(spacing: 6) {
+            chip("all", tint: .primary, count: store.workspaces.count, value: "")
+            ForEach(Source.allCases, id: \.self) { s in
+                let n = store.workspaces.filter { $0.source == s }.count
+                if n > 0 { chip(s.rawValue.lowercased(), tint: s.tint, count: n, value: s.rawValue) }
+            }
+        }
+    }
+
+    func chip(_ title: String, tint: Color, count: Int, value: String) -> some View {
+        let on = filter == value
+        return Button { filter = value } label: {
+            HStack(spacing: 6) {
+                Circle().fill(tint).frame(width: 6, height: 6)
+                Text(title)
+                Text("\(count)").foregroundStyle(.tertiary)
+            }
+            .font(mono(11))
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(on ? tint.opacity(0.18) : Chrome.raised))
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(on ? tint.opacity(0.6) : Chrome.hairline))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     func header(_ title: String, tint: Color, count: Int) -> some View {
         HStack(spacing: 7) {
             Circle().fill(tint).frame(width: 6, height: 6)
@@ -753,7 +791,8 @@ struct AgentsView: View {
     }
 
     @ViewBuilder
-    func section(_ title: String, tint: Color, _ items: [Workspace]) -> some View {
+    func section(_ title: String, tint: Color, _ all: [Workspace]) -> some View {
+        let items = shown(all)
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 header(title, tint: tint, count: items.count)
@@ -763,7 +802,7 @@ struct AgentsView: View {
     }
 
     @ViewBuilder var staleSection: some View {
-        let stale = store.section(.idle, stale: true)
+        let stale = shown(store.section(.idle, stale: true))
         if !stale.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Button { withAnimation(.easeOut(duration: 0.15)) { showStale.toggle() } } label: {
@@ -826,6 +865,7 @@ struct WorkspaceCard: View {
                     }
                 }
                 Spacer(minLength: 6)
+                SourceBadge(source: w.source)
                 AgeChip(createdAt: w.createdAt)
             }
             ForEach(w.agents) { AgentRow(agent: $0) }
@@ -834,7 +874,7 @@ struct WorkspaceCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if !w.tasks.isEmpty { TaskList(tasks: w.tasks) }
-            Text("\(w.source.rawValue.lowercased()) · \(ago(w.lastActivity) == "now" ? "active now" : "active \(ago(w.lastActivity)) ago")")
+            Text(ago(w.lastActivity) == "now" ? "active now" : "active \(ago(w.lastActivity)) ago")
                 .font(mono(10)).foregroundStyle(.tertiary)
         }
         .padding(12)
@@ -933,6 +973,18 @@ struct StatusPill: View {
         }
         .foregroundStyle(status == .idle ? Color.secondary : tint)
         .onAppear { pulse = true }
+    }
+}
+
+struct SourceBadge: View {
+    let source: Source
+
+    var body: some View {
+        Text(source.rawValue.lowercased())
+            .font(mono(10, .medium))
+            .foregroundStyle(source.tint)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(source.tint.opacity(0.15)))
     }
 }
 

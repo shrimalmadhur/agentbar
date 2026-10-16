@@ -300,7 +300,7 @@ struct WorkspacePage: View {
             }
             .foregroundStyle(tint)
             AgeChip(createdAt: w.createdAt)
-            Text(w.source.rawValue.lowercased()).font(mono(11)).foregroundStyle(.secondary)
+            SourceBadge(source: w.source)
             Spacer()
             stat(w.agents.count, "agent", brand(w.lead?.kind ?? .claude))
             stat(subs, "subagent", palette.subagent)
@@ -337,7 +337,7 @@ struct WorkspacePage: View {
                         .frame(width: 28, height: 28)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(a.title).font(.headline).lineLimit(1)
-                        Text(a.source.rawValue.lowercased()).font(mono(10)).foregroundStyle(.secondary)
+                        SourceBadge(source: a.source)
                     }
                     Spacer()
                     StatusPill(status: a.status, label: a.label, since: a.since)
