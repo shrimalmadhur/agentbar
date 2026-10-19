@@ -580,6 +580,7 @@ final class AgentsStore: ObservableObject {
         }
         needsYou = now
         workspaces = snap.workspaces
+        openRepos = Set(workspaces.map(repoKey)).sorted()
         problems = snap.problems
         updatedAt = Date()
     }
@@ -836,6 +837,18 @@ func ago(_ d: Date?) -> String {
     return "\(s / 86400)d"
 }
 
+/// The open workspaces' repos, sorted. Colors go to repos in this order rather
+/// than by hashing names, because 8 colors over ~14 repo names always collide
+/// and the repos open at once are usually fewer than 8.
+var openRepos: [String] = []
+
+func repoColor(_ repo: String) -> Color {
+    let hues = [0x7DB4E8, 0xB39DF2, 0x5FC9C0, 0xE07FB8, 0xD9C26A, 0xC4A484, 0x9FB4C8, 0xE8E3D8] // no orange or green: statuses use those
+    return hex(hues[(openRepos.firstIndex(of: repo) ?? 0) % hues.count])
+}
+
+func repoKey(_ w: Workspace) -> String { w.repo.isEmpty ? w.name : w.repo }
+
 func color(_ s: Status) -> Color {
     switch s { case .needsYou: needsColor; case .working: workingColor; case .idle: .secondary }
 }
@@ -852,7 +865,7 @@ struct WorkspaceCard: View {
                     HStack(spacing: 7) {
                         Circle().fill(color(w.status).opacity(w.status == .idle ? 0.5 : 1)).frame(width: 7, height: 7)
                         if !w.repo.isEmpty && w.repo != w.name {
-                            Text(w.repo).foregroundStyle(.secondary)
+                            Text(w.repo).foregroundStyle(repoColor(w.repo))
                             Text("/").foregroundStyle(.tertiary).padding(.horizontal, -3)
                         }
                         Text(w.name).fontWeight(.semibold)
@@ -879,7 +892,11 @@ struct WorkspaceCard: View {
                 .font(mono(10)).foregroundStyle(.tertiary)
         }
         .padding(12)
-        .surface(hovering: hovering, border: w.status == .needsYou ? needsColor.opacity(0.45) : Chrome.hairline)
+        .padding(.leading, 3)
+        .overlay(alignment: .leading) { Rectangle().fill(repoColor(repoKey(w))).frame(width: 3) }
+        .surface(hovering: hovering, border: w.status == .needsYou ? needsColor.opacity(0.45) : Chrome.hairline,
+                 tint: w.status == .idle ? nil : color(w.status))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .contextMenu { WorkspaceActions(workspace: w) }

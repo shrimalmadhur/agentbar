@@ -42,10 +42,11 @@ enum Chrome {
 func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight, design: .monospaced) }
 
 extension View {
-    /// A card: a flat surface with a hairline border.
-    func surface(hovering: Bool = false, border: Color = Chrome.hairline) -> some View {
-        background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(hovering ? Chrome.raised : Chrome.surface))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(border))
+    /// A card: a flat surface, washed with `tint` if given, with a hairline border.
+    func surface(hovering: Bool = false, border: Color = Chrome.hairline, tint: Color? = nil) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        return background(ZStack { shape.fill(hovering ? Chrome.raised : Chrome.surface); shape.fill((tint ?? .clear).opacity(0.09)) })
+            .overlay(shape.strokeBorder(border))
     }
 
     /// A section label: lowercase monospace, as in herdr's sidebar.
