@@ -63,7 +63,7 @@ Needs herdr. Agents run in a herdr workspace per feature, one tab per repo.
 
 - **One-click switching** between Claude Code accounts. New `claude` sessions
   use the account you switch to.
-- **Usage** for each account: 5-hour and weekly limits, with time until reset.
+- **Usage** for each account: weekly and Fable limits (5-hour for Codex), with time until reset.
 - **Codex usage** for the account logged in to the Codex CLI.
 - **No extra logins**: reuses the logins Claude Code and Codex already saved.
 

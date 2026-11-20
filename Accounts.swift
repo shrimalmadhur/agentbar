@@ -189,6 +189,15 @@ extension UsageWindow {
         let w = json as? [String: Any]
         self.init(pct: w?["utilization"] as? Double, resetsAt: parseDate(w?["resets_at"]))
     }
+
+    // Claude's per-model weekly cap lives in "limits": {"kind": "weekly_scoped",
+    // "scope": {"model": {"display_name": "Fable"}}, "percent": 20, "resets_at": "…"}
+    init?(claudeModel name: String, in u: [String: Any]) {
+        guard let l = (u["limits"] as? [[String: Any]])?.first(where: {
+            (($0["scope"] as? [String: Any])?["model"] as? [String: Any])?["display_name"] as? String == name
+        }) else { return nil }
+        self.init(pct: l["percent"] as? Double, resetsAt: parseDate(l["resets_at"]))
+    }
 }
 
 struct Slot: Identifiable {
@@ -199,6 +208,7 @@ struct Slot: Identifiable {
     // nil when the plan has no such window (Codex Pro only has a weekly one).
     var fiveHour: UsageWindow?
     var sevenDay: UsageWindow?
+    var fable: UsageWindow?
     var problem: String?
 }
 
@@ -323,8 +333,8 @@ final class AccountsStore: ObservableObject {
             var s = Slot(name: name, email: slotEmail(name), tier: slotTier(name))
             let file = usageFile(slot: name)
             if let u = cachedUsage(file, maxAge: cacheMaxAge) {
-                s.fiveHour = UsageWindow(claude: u["five_hour"])
                 s.sevenDay = UsageWindow(claude: u["seven_day"])
+                s.fable = UsageWindow(claudeModel: "Fable", in: u)
                 out.append(s)
                 continue
             }
@@ -345,8 +355,8 @@ final class AccountsStore: ObservableObject {
                 }
                 let u = try await get("/api/oauth/usage", o)
                 saveUsage(u, file)
-                s.fiveHour = UsageWindow(claude: u["five_hour"])
                 s.sevenDay = UsageWindow(claude: u["seven_day"])
+                s.fable = UsageWindow(claudeModel: "Fable", in: u)
             } catch {
                 if let r = error as? RateLimited { retryAt = Date().addingTimeInterval(r.retryAfter) }
                 s.problem = error.localizedDescription
@@ -539,6 +549,7 @@ struct AccountCard: View {
                 HStack(spacing: 12) {
                     if let w = slot.fiveHour { UsageGauge(label: "5-hour", window: w) }
                     if let w = slot.sevenDay { UsageGauge(label: "Weekly", window: w) }
+                    if let w = slot.fable { UsageGauge(label: "Fable", window: w) }
                 }
             }
         }
